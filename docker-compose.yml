@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  # TDSQL MySQL-compatible database
+  tdsql:
+    image: mysql:8.0
+    container_name: agent_collab_db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${TDSQL_PASSWORD:-password123}
+      MYSQL_DATABASE: ${TDSQL_DATABASE:-agent_collab}
+      MYSQL_USER: ${TDSQL_USER:-agent_user}
+      MYSQL_PASSWORD: ${TDSQL_PASSWORD:-password123}
+    ports:
+      - "${TDSQL_PORT:-3306}:3306"
+    volumes:
+      - tdsql_data:/var/lib/mysql
+      - ./scripts/create_tables.sql:/docker-entrypoint-initdb.d/init.sql
+    command: 
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    networks:
+      - agent_network
+
+  # Redis for caching and pub/sub
+  redis:
+    image: redis:7-alpine
+    container_name: agent_collab_redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 10s
+      retries: 5
+    networks:
+      - agent_network
+
+  # Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent_collab_app
+    ports:
+      - "8000:8000"
+    environment:
+      - TDSQL_HOST=tdsql
+      - TDSQL_PORT=3306
+      - TDSQL_USER=${TDSQL_USER:-agent_user}
+      - TDSQL_PASSWORD=${TDSQL_PASSWORD:-password123}
+      - TDSQL_DATABASE=${TDSQL_DATABASE:-agent_collab}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      tdsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - agent_network
+
+volumes:
+  tdsql_data:
+  redis_data:
+
+networks:
+  agent_network:
+    driver: bridge

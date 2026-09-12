@@ -1,0 +1,240 @@
+"""
+Database Models for Agent Collaboration Platform
+"""
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Enum
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from .database import Base
+import enum
+
+
+class UserRole(str, enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
+    AGENT = "agent"
+
+
+class ChannelType(str, enum.Enum):
+    PUBLIC = "public"
+    PRIVATE = "private"
+    DM = "dm"
+    AGENT = "agent"  # Agent-to-Agent communication
+
+
+class MessageType(str, enum.Enum):
+    TEXT = "text"
+    FILE = "file"
+    AGENT_RESPONSE = "agent_response"
+    SYSTEM = "system"
+    COMMAND = "command"
+
+
+class TaskStatus(str, enum.Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    username = Column(String(100), unique=True, index=True, nullable=False)
+    email = Column(String(255), unique=True, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    display_name = Column(String(200))
+    avatar_url = Column(String(500))
+    role = Column(Enum(UserRole), default=UserRole.USER)
+    is_active = Column(Boolean, default=True)
+    is_agent = Column(Boolean, default=False)  # True if this is an agent
+    agent_capabilities = Column(Text)  # JSON string of agent capabilities
+    # User status fields
+    status_emoji = Column(String(10))  # e.g., 🚀, 😴
+    status_text = Column(String(100))  # Custom status text
+    status_expires_at = Column(DateTime(timezone=True))  # Status expiration
+    # Online status
+    last_seen_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    channels = relationship("Channel", secondary="channel_members", back_populates="members")
+    messages = relationship("Message", back_populates="sender", foreign_keys="Message.sender_id")
+    tasks = relationship("Task", back_populates="creator", foreign_keys="Task.creator_id")
+    notifications = relationship("Notification", back_populates="user")
+
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    channels = relationship("Channel", back_populates="workspace")
+
+
+class Channel(Base):
+    __tablename__ = "channels"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    channel_type = Column(Enum(ChannelType), default=ChannelType.PUBLIC)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"))
+    created_by = Column(Integer, ForeignKey("users.id"))
+    extra_data = Column(Text)  # JSON string for additional data (invite codes, etc.)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    workspace = relationship("Workspace", back_populates="channels")
+    members = relationship("User", secondary="channel_members", back_populates="channels")
+    messages = relationship("Message", back_populates="channel")
+    tasks = relationship("Task", back_populates="channel")
+
+
+class ChannelMember(Base):
+    __tablename__ = "channel_members"
+    
+    channel_id = Column(Integer, ForeignKey("channels.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    role = Column(String(50), default="member")
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_muted = Column(Boolean, default=False)
+    
+    # Relationships
+    channel = relationship("Channel", backref="member_associations")
+    user = relationship("User", backref="channel_associations")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    message_type = Column(Enum(MessageType), default=MessageType.TEXT)
+    reply_to_id = Column(Integer, ForeignKey("messages.id"))
+    thread_id = Column(Integer)
+    mentions = Column(Text)  # JSON array of mentioned user IDs
+    extra_data = Column(Text)  # JSON string for additional data (renamed from metadata)
+    is_pinned = Column(Boolean, default=False)  # 消息是否被固定
+    pinned_at = Column(DateTime(timezone=True))  # 固定时间
+    pinned_by = Column(Integer, ForeignKey("users.id"))  # 固定者
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    is_deleted = Column(Boolean, default=False)
+    
+    # Relationships
+    channel = relationship("Channel", back_populates="messages")
+    sender = relationship("User", back_populates="messages", foreign_keys=[sender_id])
+    replies = relationship("Message", backref="parent_message", remote_side=[id])
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    title = Column(String(500), nullable=False)
+    description = Column(Text)
+    channel_id = Column(Integer, ForeignKey("channels.id"))
+    creator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    assignee_id = Column(Integer, ForeignKey("users.id"))  # Can be user or agent
+    status = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
+    priority = Column(Integer, default=0)  # 0: low, 1: medium, 2: high
+    due_date = Column(DateTime(timezone=True))
+    result = Column(Text)  # Task result or output
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    channel = relationship("Channel", back_populates="tasks")
+    creator = relationship("User", foreign_keys=[creator_id])
+    assignee = relationship("User", foreign_keys=[assignee_id])
+
+
+class AgentTask(Base):
+    """
+    Detailed task information for agent-to-agent collaboration
+    """
+    __tablename__ = "agent_tasks"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    parent_task_id = Column(Integer, ForeignKey("tasks.id"))
+    source_agent_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    target_agent_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    task_type = Column(String(100))  # e.g., "code_review", "data_analysis", "generation"
+    input_data = Column(Text)  # JSON input for the task
+    output_data = Column(Text)  # JSON output from the task
+    status = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
+    error_message = Column(Text)
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    parent_task = relationship("Task")
+    source_agent = relationship("User", foreign_keys=[source_agent_id])
+    target_agent = relationship("User", foreign_keys=[target_agent_id])
+
+
+class Webhook(Base):
+    """
+    Webhooks for external integrations
+    """
+    __tablename__ = "webhooks"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    url = Column(String(500), nullable=False)
+    secret = Column(String(255))
+    events = Column(Text)  # JSON array of event types
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"))
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class Notification(Base):
+    """
+    User notifications
+    """
+    __tablename__ = "notifications"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    type = Column(String(50), nullable=False)  # mention, task, message, etc.
+    title = Column(String(200), nullable=False)
+    content = Column(Text)
+    link = Column(String(500))
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    user = relationship("User", back_populates="notifications")
+
+
+class ActivityLog(Base):
+    """
+    Activity logging for audit trail
+    """
+    __tablename__ = "activity_logs"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(100))
+    resource_id = Column(Integer)
+    details = Column(Text)  # JSON details
+    ip_address = Column(String(45))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    user = relationship("User")
