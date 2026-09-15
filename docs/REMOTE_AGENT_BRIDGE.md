@@ -16,7 +16,72 @@
 
 **主机 B 与 qwen 必须同机**（stdio 限制）；**主机 B 与 A 可以异机**（走网络）。
 
-## 认证方式：登录换 token（推荐）
+## 一、内网分发：让用户从 AgentChat 服务端下载
+
+内网环境通常无法访问 GitHub，因此 AgentChat **自带分发能力**——服务端直接
+对外提供桥接器下载，用户只需能访问 AgentChat 即可拿到安装包。
+
+### 服务端一次性构建
+
+分发包是构建产物（`.gitignore` 已排除 `dist/`），部署后需在服务端构建一次：
+
+```bash
+cd /path/to/agentchat
+bash scripts/build_bridge_dist.sh 1.0.0
+# 产出 dist/bridge/agentchat-bridge-1.0.0.tar.gz + SHA256SUMS + version
+```
+
+升级桥接器时重新执行该脚本并递增版本号即可。
+
+### 分发端点（无需认证）
+
+| 端点 | 用途 |
+|---|---|
+| `GET /api/bridge/readme` | **纯文本安装说明**（自动带当前服务端地址） |
+| `GET /api/bridge/install.sh` | 一键安装脚本（自动注入服务端地址） |
+| `GET /api/bridge/download` | 下载分发包 tar.gz |
+| `GET /api/bridge/checksum` | 下载 SHA256SUMS |
+| `GET /api/bridge/version` | 查询版本与校验和（JSON） |
+
+未构建时会返回 `404` 并提示执行构建脚本，不会静默失败。
+
+### 告诉用户怎么装
+
+把这一行发给用户（`<AGENTCHAT>` 换成实际地址）：
+
+```bash
+curl -fsSL http://<AGENTCHAT>:8000/api/bridge/install.sh | bash
+```
+
+> 管道执行远程脚本存在被中间篡改的风险。内网可信环境下可接受；
+> 若要求更严，改用下面的「下载 + 校验」方式。
+
+**推荐给用户的方式（带完整性校验）**：
+
+```bash
+curl -LO http://<AGENTCHAT>:8000/api/bridge/download
+curl -LO http://<AGENTCHAT>:8000/api/bridge/checksum
+sha256sum -c SHA256SUMS
+tar xzf agentchat-bridge-*.tar.gz
+cd agentchat-bridge-*/ && bash bridge_install.sh
+```
+
+用户也可以先自己看说明，再决定装不装：
+
+```bash
+curl http://<AGENTCHAT>:8000/api/bridge/readme
+```
+
+### 为什么走服务端而不是文件服务器
+
+- 用户**本来就能访问 AgentChat**，所以一定能下载，无需额外开通权限
+- 安装脚本能**自动识别服务端地址**并写进配置，避免用户填错
+- 版本与服务端绑定，升级时用户拉到的就是匹配版本
+- 无需额外维护网盘/nginx/对象存储
+
+---
+
+## 二、认证方式：登录换 token（推荐）
 
 桥接进程通过 `POST /api/auth/login` 用 agent 账号密码换取 access token，
 因此**远端机器不需要持有服务端的 `SECRET_KEY`**，避免密钥扩散。
@@ -25,7 +90,7 @@
 > `make_agent_token()` 自签。但那意味着密钥散落在每台远端机器上，泄露一台
 > 等于全部沦陷。**不推荐。**
 
-## 前置条件
+## 三、前置条件
 
 ### 主机 A（AgentChat 服务端）
 
@@ -41,9 +106,9 @@
 2. Python 3.9+
 3. 能网络访问主机 A 的端口
 
-## 快速开始
+## 四、快速开始
 
-### 1. 在主机 A 上准备 agent 账号
+### 4.1 在主机 A 上准备 agent 账号
 
 注册 agent（若尚无）：
 
@@ -92,7 +157,7 @@ curl -X POST http://<主机A>:8000/api/auth/login \
 # 应返回 {"access_token":"...","user":{...}}
 ```
 
-### 2. 在主机 B 上部署
+### 4.2 在主机 B 上部署
 
 **方式 A：一键安装（推荐）**
 
@@ -119,7 +184,7 @@ python3 -m venv .venv
 
 > 仅需 **2 个第三方包**，其余全是标准库。不再依赖 `python-jose`。
 
-### 3. 配置与运行
+### 4.3 配置与运行
 
 编辑 `~/.agentchat/bridge/bridge.toml`：
 
@@ -172,7 +237,7 @@ ERROR:   1) 未找到 CLI 可执行文件 `qwen`。请先安装 qwen CLI 并确�
 ERROR:   2) 缺少 Python 依赖 `httpx`，请执行：pip install httpx
 ```
 
-### 4. 配置开机自启
+### 4.4 配置开机自启
 
 写到 `/etc/systemd/system/agentchat-bridge.service`：
 

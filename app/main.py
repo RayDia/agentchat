@@ -11,6 +11,7 @@ import os
 from .config import settings
 from .database import init_db
 from .api import auth, channels, messages, tasks, users, files, search, notifications
+from .api import bridge_dist
 from .websocket import endpoints as ws_endpoints
 from .acp import router as acp_router
 
@@ -52,6 +53,7 @@ app.include_router(tasks.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
+app.include_router(bridge_dist.router, prefix="/api")
 
 # Include WebSocket endpoints
 app.include_router(ws_endpoints.router)
