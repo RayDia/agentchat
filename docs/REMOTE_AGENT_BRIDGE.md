@@ -436,25 +436,19 @@ Get-ScheduledTask -TaskName AgentChatBridge | Select-Object State
 默认情况下只有被 `@提及` 时 agent 才会说话。但真实场景里 agent 往往需要
 **主动汇报**：长时间任务的进度、定时巡检结果、构建完成通知等。
 
-### 5.1 在 agent session 内推送
+### 5.1 推送通道的使用主体
 
-桥接器启动时会在本机开一个推送通道（默认 `http://127.0.0.1:8765/push`），
-并把地址注入 CLI 子进程的环境变量 `AGENTCHAT_PUSH_URL`。于是在 qwen session
-内部直接调用即可：
+桥接器启动后会在本机开一个推送通道（默认 `http://127.0.0.1:8765/push`）。
+调用方是**与桥接器同机的任意进程/脚本**，例如：
 
 ```bash
-# 最简形式（桥接器已注入 AGENTCHAT_PUSH_URL）
-curl -X POST "$AGENTCHAT_PUSH_URL" -d '构建完成，共修改 3 个文件'
-
-# 或用安装时自带的工具
-~/.agentchat/bridge/agentchat-send "今天的代码巡检未发现阻塞问题"
-
-# Windows（PowerShell）
-#   .\agentchat-send.ps1 "任务已完成"
+curl -X POST http://127.0.0.1:8765/push -d '构建完成，共修改 3 个文件'
+# 或安装包自带的 agentchat-send（Windows 用 agentchat-send.ps1）
+~/.agentchat/bridge/agentchat-send "巡检完成，未发现阻塞问题"
 ```
 
-请求体支持**纯文本**或 JSON（`{"content":"..."}` 亦可作 `output`/`text`），
-响应形如 `{"ok":true,"message_id":231,"channel_id":4}`。
+请求体支持**纯文本**或 JSON（`content`/`output`/`text` 字段均可），
+响应形如 `{"ok":true,"message_id":237,"channel_id":4}`。
 
 > **为什么是本地端口，而不是直接调 AgentChat API？**
 > 服务端 `handle_output` 会校验 session 与**当前 websocket 连接**绑定
@@ -492,11 +486,36 @@ curl -X POST "$AGENTCHAT_PUSH_URL" -d '构建完成，共修改 3 个文件'
 - `output` 必须由**建立了该 session 的那条 WS 连接**发出，换连接会被拒
 - 服务端每 30 秒发一次 `ping`，未回应会被视为掉线
 
+### 5.2 ⚠️ LLM 能否自己发起推送？（重要限制）
+
+**不能。** 这是 ACP 的架构决定，不是本项目的缺陷。
+
+ACP 遵从 Zed 的设计：**文件系统与终端由 client（也就是桥接器）托管**。
+qwen 侧的代码是 `setupFileSystem(){ if (!this.clientCapabilities?.fs) return; }`——
+client 不声明 `clientCapabilities`（`fs` / `terminal`），它就认为没有这些工具。
+本桥接器目前没有实现这些 client 能力，因此在 ACP 会话里的 qwen
+**不会执行任何 shell 命令**（实测：让它执行 `curl` 推送时，它直接以文本回复
+"您没有提供要推送的文字内容"，全程未向 client 发起任何方法请求）。
+
+因此正确用法是**由外层编排，而不是让 LLM 自己调**：
+
+| 场景 | 做法 |
+|---|---|
+| 定时巡检 / CI / 构建通知 | 脚本直接 POST 到本地推送端口 |
+| 长时间任务的进度汇报 | 编排 qwen 的外层脚本按其输出/状态回调推送 |
+| 想让 LLM 自主推送 | 需桥接器实现 ACP client 能力（`fs/*`、`terminal/*`、<br>`session/request_permission`），见下 |
+
+> 若确实要让 LLM 自主执行，需要桥接器声明 `clientCapabilities` 并实现上述 RPC。
+> 请注意这等同于**授予 LLM 在用户机器上执行任意命令的权限**，涉及明显的安全
+> 权衡（建议至少做命令白名单与审批），属于独立的工作量。
+
 ### 5.3 限制
 
 - 推送内容目前是纯文本（不带附件、不指定 `reply_to` 线程）
-- 若桥接器正在重连，推送会失败并返回 502，agent 侧应做重试
+- 若桥接器正在重连，推送会失败并返回 502，调用方应做重试
 - 推送与回复共用同一条连接，高频推送建议自行合并
+- 推送通道仅监听 `127.0.0.1`，不对外暴露；但同机的任何进程都能推送，
+  请确认用户对主机有管控
 
 ## 参数说明
 

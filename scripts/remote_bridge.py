@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -555,17 +556,36 @@ class RemoteBridge:
         await self.ws.send(json.dumps(
             {"type": "connect", "data": {"channel_id": self.channel_id}}))
 
-        # 先收 connect 回执拿到 ACP session_id —— 主动推送依赖它
+        # 先收 connect 回执拿到 ACP session_id —— 主动推送依赖它。
+        # 注意服务端会先发一帧 status(waiting_for_connect)，真正的回执在其后，
+        # 所以要跳过这些前导帧，否则中间窗口期内推送会因为没有 session_id 而失败。
         self.acp_session_id = None
-        try:
-            first = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=15))
-            if first.get("type") == "connect" and first.get("status") == "success":
-                self.acp_session_id = (first.get("data") or {}).get("session_id")
-            else:
-                logger.warning("connect 回执异常: %s",
-                               json.dumps(first, ensure_ascii=False)[:200])
-        except Exception as e:
-            logger.warning("读取 connect 回执失败（推送能力暂不可用）: %s", e)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                frame = json.loads(await asyncio.wait_for(
+                    self.ws.recv(), timeout=max(1.0, deadline - time.monotonic())))
+            except Exception as e:
+                logger.warning("等待 connect 回执超时（推送能力暂不可用）: %s", e)
+                break
+            ftype = frame.get("type")
+            if ftype == "connect":
+                if frame.get("status") == "success":
+                    self.acp_session_id = (frame.get("data") or {}).get("session_id")
+                else:
+                    logger.warning("connect 被拒绝: %s",
+                                   json.dumps(frame, ensure_ascii=False)[:200])
+                break
+            if ftype == "ping":
+                await self.ws.send(json.dumps({
+                    "type": "pong",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }))
+                continue
+            # status / 未知帧：继续等待真正的回执
+            logger.debug("跳过前导帧 type=%s", ftype)
+        if not self.acp_session_id:
+            logger.warning("未取得 ACP session_id，推送能力暂不可用")
 
         logger.info("已连接 AgentChat(%s, channel=%s) 与 qwen(session=%s)",
                     self.base_url, self.channel_id, self.qwen_session_id)
