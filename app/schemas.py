@@ -45,6 +45,16 @@ class AgentRegister(BaseModel):
     description: Optional[str] = None
 
 
+class PasswordChange(BaseModel):
+    """改密请求。
+
+    old_password 可选：本人凭 token 改自己密码、且已是凭 token 认证的情况下
+    可不填；管理端代改他人密码时也不需要。若提供则会被校验。
+    """
+    new_password: str = Field(..., min_length=6)
+    old_password: Optional[str] = None
+
+
 # ============ Token Schemas ============
 class Token(BaseModel):
     access_token: str

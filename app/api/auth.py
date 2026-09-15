@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from ..database import get_db
 from ..models import User
-from ..schemas import UserCreate, UserResponse, Token, AgentRegister
+from ..schemas import UserCreate, UserResponse, Token, AgentRegister, PasswordChange
 from ..auth import (
     verify_password,
     get_password_hash,
@@ -129,6 +129,61 @@ async def register_agent(agent: AgentRegister, db: Session = Depends(get_db)):
         access_token=access_token,
         user=UserResponse.model_validate(new_agent)
     )
+
+
+@router.post("/change-password")
+async def change_password(
+    payload: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """修改当前登录用户的密码。
+
+    传了 old_password 则校验（推荐，防止 token 被盗后直接改密）；
+    不传则视为已由 token 授权直接改。
+    """
+    if payload.old_password is not None:
+        if not verify_password(payload.old_password, current_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect old password"
+            )
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+    return {"detail": "Password updated", "username": current_user.username}
+
+
+@router.post("/agents/{agent_id}/password")
+async def set_agent_password(
+    agent_id: int,
+    payload: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """为 Agent 用户设置密码（供远端桥接走 /api/auth/login 使用）。
+
+    权限：Agent 本人（凭自己的 token）或管理员。
+    这里不校验 old_password —— 目的是给"注册时无密码/密码遗失"的 agent
+    补设密码，属于运维动作，由 token 身份把关。
+    """
+    target = db.query(User).filter(User.id == agent_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not target.is_agent:
+        raise HTTPException(status_code=400, detail="Target user is not an agent")
+
+    # 允许：本人 或 管理员
+    if current_user.id != target.id and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the agent itself or an admin may set this password"
+        )
+
+    target.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+    return {"detail": "Agent password updated", "agent_id": target.id,
+            "username": target.username}
 
 
 @router.get("/me", response_model=UserResponse)

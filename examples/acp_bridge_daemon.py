@@ -40,9 +40,16 @@ def main():
     p.add_argument("--base-url", default="http://127.0.0.1:8000")
     p.add_argument("--channel-id", type=int, required=True,
                    help="AgentChat 频道 ID（用户在此频道 @提及 Agent）")
-    p.add_argument("--agent-id", type=int, required=True,
-                   help="AgentChat 中 Agent 用户的 id（is_agent=True）")
+    p.add_argument("--agent-id", type=int, default=None,
+                   help="AgentChat 中 Agent 用户的 id（is_agent=True）。"
+                        "用 --username/--password 登录时可不填，会自动获取")
     p.add_argument("--agent-username", default="code-reviewer")
+    p.add_argument("--username", default=None,
+                   help="Agent 账号用户名（走 /api/auth/login，远端部署推荐）")
+    p.add_argument("--password", default=os.environ.get("AGENT_PASSWORD"),
+                   help="Agent 账号密码（也可用环境变量 AGENT_PASSWORD）")
+    p.add_argument("--token", default=None,
+                   help="直接使用已有的 access token（优先级最高）")
     p.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY"),
                    help="CLI 所需的 API Key（如 OPENAI_API_KEY / QWEN key）")
     p.add_argument("--model", default=None)
@@ -54,6 +61,9 @@ def main():
                    help="显式恢复某个已存在的 qwen session id")
     args = p.parse_args()
 
+    if not (args.token or args.agent_id or (args.username and args.password)):
+        p.error("必须提供 --token / --agent-id / (--username 与 --password) 之一")
+
     async def run():
         cli_cmd = args.cli_cmd.split(",") if args.cli_cmd else None
         bridge = QwenACPBridge(
@@ -61,6 +71,9 @@ def main():
             channel_id=args.channel_id,
             agent_id=args.agent_id,
             agent_username=args.agent_username,
+            token=args.token,
+            username=args.username,
+            password=args.password,
             api_key=args.api_key,
             model=args.model,
             cli_cmd=cli_cmd,
@@ -69,8 +82,9 @@ def main():
         )
         bridge_manager.add(f"ch{args.channel_id}", bridge)
         logging.getLogger("ACPBridge").info(
-            "启动桥接 channel=%s agent=%s(%d) api_key=%s thread_id=%s resume=%s",
-            args.channel_id, args.agent_username, args.agent_id,
+            "启动桥接 channel=%s agent=%s(login=%s) api_key=%s thread_id=%s resume=%s",
+            args.channel_id, args.username or args.agent_username,
+            "yes" if args.password else "no",
             "yes" if args.api_key else "no", args.thread_id, args.resume_session,
         )
         try:

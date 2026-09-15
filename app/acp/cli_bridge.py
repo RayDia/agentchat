@@ -50,13 +50,42 @@ except Exception as e:  # pragma: no cover
 
 
 def make_agent_token(user_id: int, expires_hours: int = 24) -> str:
-    """为 Agent 用户生成 JWT（与 AgentChat 服务端 authenticate_socket_token 一致）"""
+    """为 Agent 用户生成 JWT（与 AgentChat 服务端 authenticate_socket_token 一致）
+
+    注意：这要求本机持有与服务端相同的 SECRET_KEY。远端部署若不便共享密钥，
+    改用 login_agent() 走 /api/auth/login 换取 token。
+    """
     payload = {
         "user_id": user_id,
         "exp": datetime.now(timezone.utc) + timedelta(hours=expires_hours),
         "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+async def login_agent(base_url: str, username: str, password: str,
+                      timeout: float = 20.0) -> dict:
+    """通过 /api/auth/login 换取 agent 的 access token（远端部署推荐方式）。
+
+    优点：远端机器**无需**持有服务端 SECRET_KEY，只需网络可达 + agent 账号密码。
+    注意：该端点用 OAuth2PasswordRequestForm，请求体必须是 form-data 而非 JSON。
+
+    返回 {"token": str, "user": dict}；失败抛 RuntimeError。
+    """
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/api/auth/login"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, data={"username": username, "password": password})
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"登录失败 HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+    body = resp.json()
+    token = body.get("access_token")
+    if not token:
+        raise RuntimeError(f"登录响应缺少 access_token: {body}")
+    return {"token": token, "user": body.get("user") or {}}
 
 
 class ACPMysqlStore:
@@ -90,7 +119,10 @@ class ACPMysqlStore:
             row.thread_id = thread_id
             row.channel_id = channel_id
             row.process_state = process_state
-            row.extra_data = json.dumps(extra or {})
+            # 必须显式写入 qwen_session_id：get_session_by_thread 依赖该键做 resume
+            merged = {"qwen_session_id": session_id}
+            merged.update(extra or {})
+            row.extra_data = json.dumps(merged)
             db.commit()
         except Exception as e:
             logger.warning("save_session 失败: %s", e)
@@ -164,16 +196,31 @@ class ACPMysqlStore:
 
 
 class QwenACPBridge:
-    """单个 CLI（qwen）会话的桥接器"""
+    """单个 CLI（qwen）会话的桥接器
 
-    def __init__(self, base_url, channel_id, agent_id, agent_username,
+    token 的三种来源（优先级从高到低）：
+      1. 显式传入 token（例如 login_agent() 走 /api/auth/login 换来的，推荐远端部署）
+      2. 显式传入 agent_id —— 用本机 SECRET_KEY 自签（要求与服务端共享密钥）
+      3. 两者都无 —— 在 start() 里用 username/password 自动登录换取
+    注意 token 会过期（默认 60 分钟），_agentchat_loop 检测到 4001 会自动重新登录。
+    """
+
+    def __init__(self, base_url, channel_id, agent_id=None, agent_username=None,
                  token=None, api_key=None, model=None, cli_cmd=None,
-                 prompt_timeout=180, thread_id=None, resume_session_id=None):
+                 prompt_timeout=180, thread_id=None, resume_session_id=None,
+                 username=None, password=None):
         self.base_url = base_url.rstrip("/")
         self.channel_id = channel_id
         self.agent_id = agent_id
         self.agent_username = agent_username
-        self.token = token or make_agent_token(agent_id)
+        # 登录凭据（远端部署：不共享 SECRET_KEY，改用账号密码换 token）
+        self.username = username or agent_username
+        self.password = password
+        self.token = token or (make_agent_token(agent_id) if agent_id else None)
+        if not self.token and not self.password:
+            raise ValueError(
+                "必须提供 token、agent_id 或 (username + password) 三者之一"
+            )
         self.api_key = api_key
         self.model = model
         self.cli_cmd = cli_cmd or ["qwen", "--acp", "--channel", "ACP", "--output-format", "stream-json"]
@@ -188,7 +235,7 @@ class QwenACPBridge:
         self.resumed = False
 
         self.ws_base = self.base_url.replace("http", "ws", 1)
-        self.ws_url = f"{self.ws_base}/api/acp/ws/socket?token={self.token}"
+        self._login_lock = asyncio.Lock()
 
         self.proc = None
         self.ws = None
@@ -202,6 +249,31 @@ class QwenACPBridge:
         self._accum_lock = asyncio.Lock()
         self._reader = None
         self.store = ACPMysqlStore()
+
+    # ---------------- 认证 ----------------
+    @property
+    def ws_url(self):
+        """动态拼接 WebSocket URL（token 可能被 refresh_token 更新）"""
+        return f"{self.ws_base}/api/acp/ws/socket?token={self.token}"
+
+    async def refresh_token(self):
+        """用账号密码重新登录换取新 token（token 过期时调用）"""
+        if not self.password:
+            logger.warning("token 已失效且未配置 username/password，无法刷新")
+            return False
+        async with self._login_lock:
+            res = await login_agent(self.base_url, self.username, self.password)
+            self.token = res["token"]
+            if res.get("user", {}).get("id"):
+                self.agent_id = res["user"]["id"]
+            logger.info("已刷新 agent token（user=%s id=%s）",
+                        self.username, self.agent_id)
+            return True
+
+    async def ensure_token(self):
+        """首次连接前保证 token 可用（纯登录模式下启动时换取）"""
+        if not self.token:
+            await self.refresh_token()
 
     # ---------------- qwen 侧（stdio JSON-RPC） ----------------
     def _next_id(self):
@@ -430,27 +502,36 @@ class QwenACPBridge:
 
     # ---------------- AgentChat 侧（Socket Mode WebSocket） ----------------
     async def _agentchat_loop(self):
-        try:
-            async for raw in self.ws:
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    continue
-                t = msg.get("type")
-                if t == "connect":
-                    self.acp_session_id = (msg.get("data") or {}).get("session_id")
-                    logger.info("[agentchat] connect session=%s", self.acp_session_id)
-                elif t == "input":
-                    await self._on_agentchat_input(msg.get("data", {}))
-                elif t == "ping":
-                    await self.ws.send(json.dumps({
-                        "type": "pong",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }))
-                elif t == "error":
-                    logger.warning("[agentchat error] %s", json.dumps(msg, ensure_ascii=False)[:200])
-        except Exception as e:
-            logger.error("[agentchat loop] %s", e)
+        """持续接收 AgentChat 帧；断线后自动重连（含 token 过期重登）。"""
+        while True:
+            try:
+                async for raw in self.ws:
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    t = msg.get("type")
+                    if t == "connect":
+                        self.acp_session_id = (msg.get("data") or {}).get("session_id")
+                        logger.info("[agentchat] connect session=%s", self.acp_session_id)
+                    elif t == "input":
+                        await self._on_agentchat_input(msg.get("data", {}))
+                    elif t == "ping":
+                        await self.ws.send(json.dumps({
+                            "type": "pong",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }))
+                    elif t == "error":
+                        logger.warning("[agentchat error] %s", json.dumps(msg, ensure_ascii=False)[:200])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("[agentchat loop] 连接中断: %s，准备重连", e)
+
+            # 正常结束或异常退出都会走到这里 —— 尝试重连
+            if not await self._connect_with_retry():
+                logger.error("无法恢复与 AgentChat 的连接，桥接退出")
+                return
 
     async def _on_agentchat_input(self, data):
         inp = data.get("message", {})
@@ -501,11 +582,39 @@ class QwenACPBridge:
             },
         )
 
+        await self.ensure_token()
         self.ws = await websockets.connect(self.ws_url)
         await self.ws.send(json.dumps({"type": "connect", "data": {"channel_id": self.channel_id}}))
         logger.info("[bridge] 已连接 AgentChat(channel=%s) 与 qwen(session=%s)",
                     self.channel_id, self.qwen_session_id)
         await self._agentchat_loop()
+
+    async def _connect_with_retry(self, max_attempts=10):
+        """带退避重连 AgentChat；token 失效时自动重新登录。
+
+        返回 True 表示重连成功。4001 是服务端 token 失效的关闭码。
+        """
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                delay = min(30, 2 ** (attempt - 1))
+                logger.info("第 %d 次重连 AgentChat，%ds 后重试…", attempt, delay)
+                await asyncio.sleep(delay)
+            try:
+                self.ws = await websockets.connect(self.ws_url)
+                await self.ws.send(json.dumps(
+                    {"type": "connect", "data": {"channel_id": self.channel_id}}))
+                logger.info("[bridge] 已重连 AgentChat(channel=%s)", self.channel_id)
+                return True
+            except Exception as e:
+                # token 过期：重新登录后再试
+                if "4001" in str(e) or "unauthorized" in str(e).lower():
+                    logger.warning("连接被拒（token 可能已过期），尝试重新登录")
+                    if not await self.refresh_token():
+                        return False
+                else:
+                    logger.warning("重连失败: %s", e)
+        logger.error("重连 AgentChat 失败（已尝试 %d 次）", max_attempts)
+        return False
 
     async def stop(self):
         try:
