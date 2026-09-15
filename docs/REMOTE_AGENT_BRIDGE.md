@@ -103,8 +103,12 @@ curl http://<AGENTCHAT>:8000/api/bridge/readme
 ### 主机 B（远端机器）
 
 1. 已装 qwen CLI 且能正常出 LLM 回复
-2. Python 3.9+
+2. Python 3.9+（**推荐 3.11+**，可完整解析 `bridge.toml`；更低版本自动降级为简化解析）
 3. 能网络访问主机 A 的端口
+4. 支持 **Linux / macOS / Windows**，无平台限制：
+   - Windows 不需要 Git Bash 或 WSL，用自带的 PowerShell 安装即可
+   - Windows 下 npm 安装的 `qwen` 实际是 `qwen.cmd`，桥接器会自动用
+     `cmd.exe /d /c` 启动它，无需手工配置
 
 ## 四、快速开始
 
@@ -195,7 +199,8 @@ cd agentchat-bridge-*/ && bash bridge_install.sh
 ```
 agentchat-bridge-x.y.z/
 ├── remote_bridge.py        桥接器本体
-├── bridge_install.sh       一键安装脚本
+├── bridge_install.sh       一键安装脚本（Linux/macOS）
+├── bridge_install.ps1      一键安装脚本（Windows）
 ├── README.txt              快速开始
 └── REMOTE_AGENT_BRIDGE.md  完整文档（本文件）
 ```
@@ -213,9 +218,51 @@ python3 -m venv .venv
 > 无需手工装包：分发包自带安装脚本；即便全手工，也只需 **2 个第三方包**
 > （`httpx`、`websockets`），其余全是标准库。
 
+**方式 C：Windows**
+
+不需要 Git Bash / WSL，用 PowerShell（Windows 自带）即可：
+
+```powershell
+Invoke-WebRequest -Uri http://<主机A>:8000/api/bridge/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+手工安装（需 Windows 10 17063+ 内置的 `tar`）：
+
+```powershell
+Invoke-WebRequest -Uri http://<主机A>:8000/api/bridge/download -OutFile pkg.tar.gz
+tar -xzf pkg.tar.gz
+cd agentchat-bridge-*
+powershell -ExecutionPolicy Bypass -File bridge_install.ps1
+```
+
+一键脚本会：探测 Python（`python` / `python3` / `py -3`）→ 在
+`%USERPROFILE%\.agentchat\bridge` 建独立 venv → 装依赖 → 生成 `bridge.toml`
+模板（**无 BOM 的 UTF-8**）→ 生成 `start.bat` → 自动运行环境自检。
+
+自定义安装位置：`.\bridge_install.ps1 -InstallDir D:\agentchat-bridge`
+
+配置与启动（CMD 中）：
+
+```bat
+setx AGENT_PASSWORD 你的密码          :: setx 需重开终端生效
+%USERPROFILE%\.agentchat\bridge\start.bat --check
+%USERPROFILE%\.agentchat\bridge\start.bat
+```
+
+> **不要用 Word / 写字板编辑 `bridge.toml`**，它们会改写文件编码导致读取失败。
+> 用记事本、VS Code 或 `notepad`。
+
 ### 4.3 配置与运行
 
-编辑 `~/.agentchat/bridge/bridge.toml`：
+配置文件位置（**按平台**）：
+
+| 平台 | 路径 |
+|---|---|
+| Linux / macOS | `~/.agentchat/bridge/bridge.toml` |
+| Windows | `%USERPROFILE%\.agentchat\bridge\bridge.toml` |
+
+编辑它：
 
 ```toml
 [bridge]
@@ -224,6 +271,22 @@ channel-id = 4
 username = "code-reviewer"
 # 密码建议改用环境变量 AGENT_PASSWORD，不写在这里
 ```
+
+**配置文件的查找顺序**（无需记路径，放对位置就会被找到）：
+
+1. `--config <路径>` 显式指定
+2. 脚本所在目录（安装目录 / 分发包解压目录）
+3. 当前工作目录
+4. `~/.agentchat/bridge/bridge.toml`（Windows：`%USERPROFILE%\.agentchat\bridge\bridge.toml`）
+5. `~/.agentchat/bridge.toml`（兼容旧版本位置）
+6. Windows 额外：`%APPDATA%\AgentChat\bridge.toml`
+
+> **跨平台兼容性已在桥接器内处理好**，用户不必关心：
+> - Windows 记事本存出的 **BOM、CRLF 行尾** 都能正确解析
+> - Python < 3.11 无 `tomllib` 时会退化为内置简化解析器（`key = value` 写法），
+>   不会因「读不了配置」而启动失败；建议用 Python 3.11+
+> - 输出重定向（后台运行、日志落盘）时日志统一按 **UTF-8** 写出，
+>   不会因 Windows 的 GBK locale 编码崩溃
 
 三种配置来源，**优先级：命令行 > 环境变量 > 配置文件**：
 
@@ -235,12 +298,20 @@ username = "code-reviewer"
 | password | `AGENT_PASSWORD` | `--password` |
 | thread-id | — | `--thread-id` |
 
-先自检，再启动：
+先自检，再启动。Linux / macOS：
 
 ```bash
 export AGENT_PASSWORD='strong-password'
 ./start.sh --check    # 只检查 CLI/依赖/base-url，不连接
 ./start.sh            # 正式启动
+```
+
+Windows（CMD）：
+
+```bat
+setx AGENT_PASSWORD 你的密码          :: setx 需重开终端生效
+%USERPROFILE%\.agentchat\bridge\start.bat --check
+%USERPROFILE%\.agentchat\bridge\start.bat
 ```
 
 成功日志：
@@ -332,6 +403,34 @@ EOF
 launchctl load ~/Library/LaunchAgents/com.agentchat.bridge.plist
 ```
 
+**Windows** —— 任务计划程序（推荐，无窗口、登录即启动）：
+
+```powershell
+$dir  = "$env:USERPROFILE\.agentchat\bridge"
+$py   = "$dir\.venv\Scripts\python.exe"
+$act  = New-ScheduledTaskAction -Execute $py `
+          -Argument "$dir\remote_bridge.py" -WorkingDirectory $dir
+$trg  = New-ScheduledTaskTrigger -AtLogOn
+$set  = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "AgentChatBridge" `
+          -Action $act -Trigger $trg -Settings $set -Description "AgentChat Bridge"
+
+Start-ScheduledTask -TaskName "AgentChatBridge"
+Get-ScheduledTask -TaskName AgentChatBridge | Select-Object State
+```
+
+密码环境变量建议写入用户级环境变量（重启仍有效）：
+
+```powershell
+[Environment]::SetEnvironmentVariable('AGENT_PASSWORD', '你的密码', 'User')
+```
+
+更简单但不推荐长期使用的方案：把 `start.bat` 的快捷方式放进启动目录
+（`Win+R` → `shell:startup`）。缺点是会弹出一个控制台窗口。
+
+> Windows 上没有 systemd 的 `Restart=always`。任务计划程序里可用
+> 「设置 → 如果任务失败，按以下频率重新启动」兜住异常退出。
+
 ## 参数说明
 
 | 参数 | 必填 | 说明 |
@@ -367,6 +466,11 @@ launchctl load ~/Library/LaunchAgents/com.agentchat.bridge.plist
    agent 会话与人类客户端若落在不同进程，@提及消息无法转发。**在引入
    Redis pub/sub 之前，AgentChat 必须单实例部署。**
 4. **无 mTLS、无来源 IP 校验**。务必用反向代理加 HTTPS，并在网关层做访问控制。
+5. **Windows 上的 CLI 进程树**。CLI 若经由 `cmd.exe` 包装启动，桥接退出时会用
+   `taskkill /F /T` 连进程树清理，正常情况不留孤儿进程；若桥接进程被**强杀**
+   （任务管理器结束、断电），残留的 qwen 需手工清理。
+6. **Windows 无 systemd**。进程崩溃后需依赖「任务计划程序」或外层守护脚本重拉，
+   详见 4.4 的 Windows 章节。
 
 ## 备选方案（暂不可用）
 

@@ -30,12 +30,37 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 import websockets
+
+
+def _configure_stdio_encoding():
+    """强制 stdout/stderr 按 UTF-8 输出。
+
+    Windows 上把输出重定向到文件/管道时（后台运行、systemd、nohup 均如此），
+    流的编码退化为 locale 编码（中文版为 cp936/GBK），一旦日志含 GBK 之外的
+    字符（emoji、某些符号）抛 UnicodeEncodeError 导致进程崩溃。
+    这里统一按 UTF-8 输出并以 replace 兜底，保证「日志不会因为编码挂掉」。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        # reconfigure 需要 Python 3.7+，且重定向后的 TextIOWrapper 才支持
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:      # 某些替身流（IDE 接管等）不支持，忽略即可
+            pass
+
+
+_configure_stdio_encoding()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -372,6 +397,7 @@ class RemoteBridge:
             stderr=asyncio.subprocess.PIPE,
             limit=10 * 1024 * 1024,
             env=env,
+            **_subprocess_kwargs(),
         )
         asyncio.create_task(self._read_stdout())
         asyncio.create_task(self._read_stderr())
@@ -396,47 +422,255 @@ class RemoteBridge:
                 await closer()
             except Exception:
                 pass
-        if self.proc and self.proc.returncode is None:
+        proc = self.proc
+        if proc and proc.returncode is None:
+            # Windows 上先按进程树杀（CLI 常被 cmd.exe 包装，杀外层会留孤儿）
+            if os.name == "nt" and proc.pid and _kill_windows_tree(proc.pid):
+                return
             try:
-                self.proc.terminate()
+                proc.terminate()
             except Exception:
                 pass
 
 
-def load_config_file(path=None):
-    """加载配置文件的 bridge 段（可选）。
+_TOML_FALLBACK_WARNED = False
 
-    查找顺序：--config 指定 > ./bridge.toml > ~/.agentchat/bridge.toml
-    支持 TOML（Python 3.11+ 内置 tomllib）。
+
+def _strip_inline_comment(value):
+    """去掉 TOML 行的行尾注释，但不破坏引号内的 #。"""
+    quote = None
+    for i, ch in enumerate(value):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == "#":
+            return value[:i].strip()
+    return value.strip()
+
+
+def _mini_toml_value(value):
+    """解析标量：字符串 / 布尔 / 整数 / 原样字符串。"""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    low = value.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _mini_toml_load(text):
+    """极简 TOML 解析，仅支持 [section] 与 key = value。
+
+    用途：Python < 3.11 且未装 tomli 时的兜底。能正确解析安装脚本生成的
+    bridge.toml。数组、多行字符串、内联表等高级语法请勿依赖本兜底实现。
     """
-    candidates = [path] if path else ["./bridge.toml",
-                                     os.path.expanduser("~/.agentchat/bridge.toml")]
-    for c in candidates:
-        if c and os.path.isfile(c):
-            try:
-                import tomllib
-            except ImportError:
-                logger.warning("需要 Python 3.11+ 才能解析 TOML 配置，已忽略 %s", c)
-                return {}
-            with open(c, "rb") as f:
-                data = tomllib.load(f)
-            cfg = data.get("bridge", data)
-            logger.info("已加载配置文件 %s", os.path.abspath(c))
-            return cfg
+    result = {}
+    section = result
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.rstrip().endswith("]"):
+            name = line[1:line.rindex("]")].strip().strip('"\'')
+            # 文档约定配置写在 [bridge] 段下；顶层段落也一律收纳
+            target = result.setdefault(name, {}) if name else result
+            section = target
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().strip('"\'')
+        if not key:
+            continue
+        section[key] = _mini_toml_value(_strip_inline_comment(value))
+    return result
+
+
+def _load_toml(text):
+    """读取 TOML 文本：优先 tomllib(3.11+) → tomli → 简易兜底解析器。"""
+    global _TOML_FALLBACK_WARNED
+    loader = None
+    try:
+        import tomllib as loader            # Python 3.11+
+    except ImportError:
+        try:
+            import tomli as loader          # 第三方 backport
+        except ImportError:
+            loader = None
+    if loader is not None:
+        return loader.loads(text)
+    if not _TOML_FALLBACK_WARNED:
+        _TOML_FALLBACK_WARNED = True
+        logger.warning(
+            "当前 Python 无 tomllib 也未安装 tomli，已使用内置简化解析器读取配置；"
+            "仅支持 key = value 写法。建议升级到 Python 3.11+ 或执行 pip install tomli")
+    return _mini_toml_load(text)
+
+
+def config_search_paths(path=None):
+    """配置文件的候选路径（按优先级，跨平台）。
+
+    覆盖三处来源：安装脚本的默认落点、脚本同目录、当前工作目录；
+    Windows 额外支持 %APPDATA%\\AgentChat\\bridge.toml。
+    """
+    candidates = []
+
+    def try_add(fn):
+        """每步都兜底：找配置文件这件事本身绝不该让进程崩掉。
+
+        pathlib 在不同平台/打包方式下可能抛 NotImplementedError、
+        RuntimeError(无 HOME) 等，这里一律视为「该候选不可用」。
+        """
+        try:
+            p = fn()
+            if p is None:
+                return
+            p = Path(p).expanduser()
+        except Exception:
+            return
+        if p not in candidates:
+            candidates.append(p)
+
+    if path:
+        try_add(lambda: str(path))
+        return candidates
+
+    # 1) 脚本自身所在目录（分发包解压目录 / 安装目录）
+    try_add(lambda: Path(__file__).resolve().parent / "bridge.toml")
+    # 2) 当前工作目录
+    try_add(lambda: Path.cwd() / "bridge.toml")
+    # 3) 用户主目录（安装脚本默认位置优先，兼容旧位置）
+    try_add(lambda: Path.home() / ".agentchat" / "bridge" / "bridge.toml")
+    try_add(lambda: Path.home() / ".agentchat" / "bridge.toml")
+    # 4) Windows：%APPDATA%
+    if os.name == "nt":
+        for var in ("APPDATA", "LOCALAPPDATA"):
+            val = os.environ.get(var)
+            if val:
+                try_add(lambda v=val: Path(v) / "AgentChat" / "bridge.toml")
+    return candidates
+
+
+def load_config_file(path=None):
+    """加载配置文件的 bridge 段。返回 (配置字典, 实际路径或 None)。
+
+    查找顺序：--config 指定 > 脚本同目录 > 当前目录 > ~/.agentchat/bridge/
+    > ~/.agentchat/ > %APPDATA%/AgentChat/（Windows）
+    """
+    for cand in config_search_paths(path):
+        if not cand.is_file():
+            continue
+        try:
+            # utf-8-sig：剥掉 Windows 记事本/PowerShell 写入的 BOM
+            data = _load_toml(cand.read_text(encoding="utf-8-sig", errors="replace"))
+        except Exception as e:
+            logger.warning("配置文件 %s 解析失败（%s），尝试下一个候选", cand, e)
+            continue
+        cfg = data.get("bridge", data) if isinstance(data, dict) else {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        logger.info("已加载配置文件 %s", cand)
+        return cfg, str(cand)
     if path:
         logger.warning("指定的配置文件不存在: %s", path)
-    return {}
+    return {}, None
 
 
-def preflight(base_url, cli_cmd):
+def resolve_cli_cmd(cli_cmd=None):
+    """把 CLI 命令整理成可直接交给 create_subprocess_exec 的形式。
+
+    Windows 上由 npm 安装的 CLI 通常只提供 qwen.cmd / qwen.ps1：
+      - CreateProcess 无法直接执行 .cmd/.bat，必须经 `cmd.exe /d /c` 包装，
+        否则报 WinError 193（%1 不是有效的 Win32 应用程序）
+      - .ps1 根本不是可执行文件，必须由 powershell.exe -File 启动
+    不做这层适配，Windows 用户会在启动子进程时直接失败。
+    """
+    cmd = list(cli_cmd) if cli_cmd else list(DEFAULT_CLI_CMD)
+    if not cmd:
+        return list(DEFAULT_CLI_CMD)
+
+    exe = cmd[0]
+
+    # POSIX：仅补全 PATH 查找结果，行为与原先一致
+    if os.name != "nt":
+        return [shutil.which(exe) or exe] + cmd[1:]
+
+    # 用户已给出路径/带扩展名时按其意图处理
+    if os.path.isabs(exe) or os.sep in exe or "/" in exe or "\\" in exe:
+        ext = os.path.splitext(exe)[1].lower()
+        if ext in (".cmd", ".bat"):
+            return ["cmd.exe", "/d", "/c"] + cmd
+        if ext == ".ps1":
+            return ["powershell.exe", "-NoProfile", "-ExecutionPolicy",
+                    "Bypass", "-File"] + cmd
+        return cmd
+
+    ext = os.path.splitext(exe)[1].lower()
+    if ext in (".cmd", ".bat"):
+        return ["cmd.exe", "/d", "/c"] + cmd
+    if ext == ".ps1":
+        return ["powershell.exe", "-NoProfile", "-ExecutionPolicy",
+                "Bypass", "-File"] + cmd
+
+    # 裸命令名：靠 PATH+PATHEXT 定位后再决定是否需要包装
+    resolved = shutil.which(exe)
+    if resolved is None:
+        return cmd
+    rext = os.path.splitext(resolved)[1].lower()
+    if rext in (".cmd", ".bat"):
+        return ["cmd.exe", "/d", "/c", resolved] + cmd[1:]
+    return [resolved] + cmd[1:]
+
+
+def _subprocess_kwargs():
+    """创建子进程的平台差异参数。
+
+    Windows 上不加 CREATE_NO_WINDOW 的话，启动 qwen 子进程会弹出控制台
+    窗口（后台常驻时尤其干扰），这里统一隐藏。
+    """
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
+def _kill_windows_tree(pid):
+    """Windows 上连进程树一起杀。
+
+    CLI 经由 cmd.exe 包装时 terminate() 只会杀掉 cmd.exe，真正的 qwen
+    会残留成孤儿进程，反复重启后机器上堆满僵尸 CLI。
+    """
+    try:
+        return subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def preflight(base_url, cli_cmd=None, resolved_cli=None):
     """启动前自检，给出可操作的错误提示而不是底层 traceback。"""
     problems = []
 
-    exe = cli_cmd[0] if cli_cmd else DEFAULT_CLI_CMD[0]
-    if shutil.which(exe) is None:
+    # 用「用户填写的原始命令名」做存在性检查；resolved 已可能被 cmd.exe 包装，
+    # 拿它去 which 只会永远命中 cmd.exe 而漏掉真正的 CLI。
+    raw = list(cli_cmd) if cli_cmd else list(DEFAULT_CLI_CMD)
+    exe = raw[0] if raw else DEFAULT_CLI_CMD[0]
+    if shutil.which(exe) is None and not os.path.isfile(exe):
+        extra = ""
+        if os.name == "nt":
+            extra = ("Windows 下 CLI 常装在 npm 全局目录，可执行 `npm root -g` "
+                     "查看位置后用 --cli-cmd 指定完整路径（须为 .exe/.cmd/.bat，"
+                     "PowerShell 脚本无法作为可执行文件启动）。")
         problems.append(
             f"未找到 CLI 可执行文件 `{exe}`。请先安装 qwen CLI 并确保在 PATH 中"
-            f"（当前 PATH 中未匹配）。可用 --cli-cmd 指定完整路径。")
+            f"（当前 PATH 中未匹配）。可用 --cli-cmd 指定完整路径。{extra}")
 
     for mod in ("httpx", "websockets"):
         try:
@@ -447,11 +681,16 @@ def preflight(base_url, cli_cmd):
     if not base_url.startswith(("http://", "https://")):
         problems.append(f"--base-url 必须以 http:// 或 https:// 开头，当前：{base_url}")
 
+    if not isinstance(base_url, str) or base_url.strip() != base_url:
+        problems.append(f"--base-url 首尾不能包含空白字符，当前：{base_url!r}")
+
     if problems:
         logger.error("启动前检查未通过：")
         for i, msg in enumerate(problems, 1):
             logger.error("  %d) %s", i, msg)
         return False
+    if resolved_cli:
+        logger.debug("CLI 解析结果: %s", " ".join(resolved_cli))
     return True
 
 
@@ -479,20 +718,22 @@ def main():
     args = p.parse_args()
 
     # 优先级：命令行 > 环境变量 > 配置文件
-    cfg = load_config_file(args.config)
+    cfg, cfg_path = load_config_file(args.config)
 
     def pick(name, env=None, default=None):
         v = getattr(args, name, None)
-        if v is not None:
-            return v
-        if env:
+        if v is None and env:
             v = os.environ.get(env)
-            if v:
-                return v
-        v = cfg.get(name.replace("_", "-")) if isinstance(cfg, dict) else None
         if v is None and isinstance(cfg, dict):
-            v = cfg.get(name)
-        return v if v is not None else default
+            # TOML 段内推荐连字符写法（base-url），同时兼容下划线写法
+            v = cfg.get(name.replace("_", "-"))
+            if v is None:
+                v = cfg.get(name)
+        if v is None:
+            return default
+        # 去首尾空白：Windows 上用 setx 或手工编辑配置容易混入 \r\n、空格，
+        # 会让 urllib/websocket 报难以定位的错误，在这里统一兜住
+        return v.strip() if isinstance(v, str) else v
 
     base_url = pick("base_url", "AGENTCHAT_BASE_URL")
     channel_id = pick("channel_id", "AGENTCHAT_CHANNEL_ID")
@@ -512,12 +753,21 @@ def main():
                 "AGENTCHAT_CHANNEL_ID / AGENTCHAT_USERNAME / AGENT_PASSWORD）"
                 "或 bridge.toml 提供。" % ", ".join(missing))
 
-    channel_id = int(channel_id)
-    cli_cmd = cli_cmd_raw.split(",") if isinstance(cli_cmd_raw, str) else None
+    if cfg_path is None:
+        logger.info("未找到配置文件，仅使用命令行参数与环境变量")
+
+    try:
+        channel_id = int(str(channel_id).strip())
+    except (TypeError, ValueError):
+        p.error(f"--channel-id 必须是整数，当前为 {channel_id!r}"
+                f"（配置文件中的值不需要加引号）")
+
+    raw_cli = cli_cmd_raw.split(",") if isinstance(cli_cmd_raw, str) else None
+    cli_cmd = resolve_cli_cmd(raw_cli)
     # 未指定 thread_id 时按 agent 名生成，保证同一 agent 重启后仍归到同一线程
     thread_id = thread_id or f"agent-{username}-ch{channel_id}"
 
-    if not preflight(base_url, cli_cmd):
+    if not preflight(base_url, raw_cli, cli_cmd):
         return 2
 
     if args.check:

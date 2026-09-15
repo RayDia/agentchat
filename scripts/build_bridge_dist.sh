@@ -22,9 +22,10 @@ NAME="agentchat-bridge-${VERSION}"
 
 SRC_RB="$REPO_ROOT/scripts/remote_bridge.py"
 SRC_INST="$REPO_ROOT/scripts/bridge_install.sh"
+SRC_PS1="$REPO_ROOT/scripts/bridge_install.ps1"
 SRC_DOC="$REPO_ROOT/docs/REMOTE_AGENT_BRIDGE.md"
 
-for f in "$SRC_RB" "$SRC_INST" "$SRC_DOC"; do
+for f in "$SRC_RB" "$SRC_INST" "$SRC_PS1" "$SRC_DOC"; do
     [ -f "$f" ] || { echo "缺少源文件: $f" >&2; exit 1; }
 done
 
@@ -33,8 +34,17 @@ BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
 mkdir -p "$OUT" "$BUILD/$NAME"
-cp "$SRC_RB" "$SRC_INST" "$SRC_DOC" "$BUILD/$NAME/"
-chmod +x "$BUILD/$NAME/bridge_install.sh" "$BUILD/$NAME/remote_bridge.py"
+cp "$SRC_RB" "$SRC_INST" "$SRC_PS1" "$SRC_DOC" "$BUILD/$NAME/"
+chmod +x "$BUILD/$NAME/bridge_install.sh" "$BUILD/$NAME/remote_bridge.py" \
+         "$BUILD/$NAME/bridge_install.ps1"
+
+# bridge_install.ps1 必须带 UTF-8 BOM，否则 Windows PowerShell 5.1 会把
+# 脚本里的中文按系统 ANSI 编码解析，输出变成乱码
+PS1="$BUILD/$NAME/bridge_install.ps1"
+if ! head -c 3 "$PS1" | od -An -tx1 | grep -q 'ef bb bf'; then
+    printf '\xef\xbb\xbf' > "$PS1.bom" && cat "$PS1" >> "$PS1.bom" \
+        && mv "$PS1.bom" "$PS1"
+fi
 
 # 快速开始说明
 cat > "$BUILD/$NAME/README.txt" <<EOF
@@ -47,6 +57,7 @@ AgentChat 本地桥接器 v$VERSION
     桥接器与 CLI 必须在同一台机器上运行（stdio 限制）。
 
 快速开始
+    【Linux / macOS】
     1) 安装（自动建独立运行环境，不污染系统）
          bash bridge_install.sh
 
@@ -60,9 +71,24 @@ AgentChat 本地桥接器 v$VERSION
     自检（不连接，只检查环境）：
          ~/.agentchat/bridge/start.sh --check
 
+    【Windows】用 PowerShell 执行（不需要 Git Bash）：
+    1) 安装
+         powershell -ExecutionPolicy Bypass -File bridge_install.ps1
+
+    2) 编辑配置（不要用 Word，避免改变编码）
+         notepad %USERPROFILE%\.agentchat\bridge\bridge.toml
+
+    3) 设置密码并启动
+         setx AGENT_PASSWORD 你的密码        （需重开终端生效）
+         %USERPROFILE%\.agentchat\bridge\start.bat
+
+    自检：
+         %USERPROFILE%\.agentchat\bridge\start.bat --check
+
 系统要求
-    - Python 3.9+（3.11+ 可直接使用 bridge.toml；更低版本请用环境变量配置）
+    - Python 3.9+（3.11+ 可直接用 bridge.toml；更低版本也能读，仅不支持复杂语法）
     - qwen CLI 已安装且在 PATH 中
+      （Windows 下 npm 安装的是 qwen.cmd，桥接会自动用 cmd.exe 启动它）
     - 能访问 AgentChat 服务端地址
 
 依赖
