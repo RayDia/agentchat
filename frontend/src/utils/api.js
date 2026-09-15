@@ -1,6 +1,17 @@
 // API Client for AgentCollab
 const API_BASE = '';
 
+// 未授权时广播的事件名：AuthContext 监听它来清理登录态并回到登录页
+export const UNAUTHORIZED_EVENT = 'agentchat:unauthorized';
+
+// 已认证接口收到 401 时，清理本地登录态并通知全局
+function handleUnauthorized() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  localStorage.removeItem('currentChannel');
+  window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+}
+
 class ApiClient {
   constructor() {
     this.base = API_BASE;
@@ -29,9 +40,19 @@ class ApiClient {
     
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || 'Request failed');
+      // token 失效/过期：清登录态并通知应用层回到登录页，避免页面静默空白
+      if (response.status === 401 && token) {
+        handleUnauthorized();
+      }
+      const err = new Error(error.detail || 'Request failed');
+      err.status = response.status;
+      throw err;
     }
     
+    // 204 等无响应体的请求
+    if (response.status === 204) {
+      return null;
+    }
     return response.json();
   }
 

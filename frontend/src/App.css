@@ -264,6 +264,33 @@ body {
   overflow: hidden;
 }
 
+/* 会话恢复中的占位界面 */
+.app-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  height: 100vh;
+  width: 100vw;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.app-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: app-loading-spin 0.8s linear infinite;
+}
+
+@keyframes app-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ============================================
    TopBar
    ============================================ */
@@ -646,6 +673,28 @@ body {
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.sidebar-error {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--error);
+}
+
+.sidebar-error .retry-btn {
+  align-self: center;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.sidebar-error .retry-btn:hover {
+  background: var(--border-color);
 }
 
 .loading-spinner {

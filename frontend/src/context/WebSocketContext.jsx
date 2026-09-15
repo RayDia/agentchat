@@ -42,10 +42,18 @@ export const WebSocketProvider = ({ children }) => {
         setConnected(false);
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket closed, reconnecting...');
+      ws.onclose = (event) => {
         setConnected(false);
         wsRef.current = null;
+
+        // 4001 = 服务端认证失败（token 已过期/失效）。
+        // 此时继续用同一个 token 重连只会无限失败，改为停止重连等待重新登录。
+        if (event.code === 4001) {
+          console.warn('[WS] 认证失败（token 可能已过期），停止重连');
+          return;
+        }
+
+        console.log('WebSocket closed, reconnecting...');
         reconnectTimeout.current = setTimeout(connectWebSocket, 3000);
       };
     };

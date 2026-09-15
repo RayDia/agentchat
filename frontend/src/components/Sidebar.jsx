@@ -13,6 +13,7 @@ const Sidebar = ({
   const [discoverChannels, setDiscoverChannels] = useState([]);
   const [activeTab, setActiveTab] = useState('joined');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
     loadChannels();
@@ -26,8 +27,14 @@ const Sidebar = ({
       ]);
       setChannels(joined.items || []);
       setDiscoverChannels(discover.items || []);
+      setLoadError(null);
     } catch (err) {
       console.error('Failed to load channels:', err);
+      // 401 会由 api.js 触发全局登出，这里只提示其他失败原因，
+      // 避免频道列表静默为空、用户不知道发生了什么
+      if (err?.status !== 401) {
+        setLoadError(err?.message || '加载频道失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -120,6 +127,11 @@ const Sidebar = ({
 
         {loading ? (
           <div className="loading-spinner"><i className="fas fa-spinner fa-spin"></i></div>
+        ) : loadError ? (
+          <div className="empty-state sidebar-error">
+            <p>{loadError}</p>
+            <button className="retry-btn" onClick={loadChannels}>重试</button>
+          </div>
         ) : activeTab === 'joined' ? (
           <ul className="channel-list">
             {channels.map(renderChannel)}

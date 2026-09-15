@@ -12,7 +12,7 @@ import CreateChannelModal from './components/CreateChannelModal';
 import './App.css';
 
 const AppContent = () => {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, loading, logout } = useAuth();
   const [currentChannel, setCurrentChannel] = useState(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showInviteCodeModal, setShowInviteCodeModal] = useState(false);
@@ -40,8 +40,18 @@ const AppContent = () => {
   };
 
   const handleLogout = () => {
-    logout();
+    logout(true);
   };
+
+  // 会话校验中：不渲染主界面，避免 token 已过期却先闪出空白的频道列表
+  if (loading) {
+    return (
+      <div className="app-loading">
+        <div className="app-loading-spinner" />
+        <p>正在恢复会话…</p>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <LoginModal />;
