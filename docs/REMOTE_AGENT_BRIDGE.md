@@ -159,30 +159,59 @@ curl -X POST http://<主机A>:8000/api/auth/login \
 
 ### 4.2 在主机 B 上部署
 
+用户机器上只需能访问 AgentChat 服务端，无需 GitHub、无需手工拷文件。
+
 **方式 A：一键安装（推荐）**
 
-拷贝 `scripts/bridge_install.sh` 和 `scripts/remote_bridge.py` 到用户机器后执行：
+内网可信环境：
 
 ```bash
-bash bridge_install.sh
+curl -fsSL http://<主机A>:8000/api/bridge/install.sh | bash
 ```
 
-脚本会：检查 Python/qwen 环境 → 在 `~/.agentchat/bridge` 建独立 venv →
-装依赖（仅 `httpx`、`websockets`）→ 生成 `bridge.toml` 配置模板（权限 600）→
-生成 `start.sh` 启动脚本 → 自动运行环境自检。
+带完整性校验（更严格）：
 
-自定义安装位置：`AGENTCHAT_BRIDGE_HOME=/opt/agentchat-bridge bash bridge_install.sh`
+```bash
+curl -LO http://<主机A>:8000/api/bridge/download
+curl -LO http://<主机A>:8000/api/bridge/checksum
+sha256sum -c SHA256SUMS
+tar xzf agentchat-bridge-*.tar.gz
+cd agentchat-bridge-*/ && bash bridge_install.sh
+```
 
-**方式 B：手工部署**
+一键脚本会：检查 Python/qwen 环境 → 在 `~/.agentchat/bridge` 建独立 venv →
+装依赖（仅 `httpx`、`websockets`，全部自动处理）→ 生成 `bridge.toml` 配置模板
+（权限 600，`base-url` 已自动写好）→ 生成 `start.sh` → 自动运行环境自检。
+
+安装后可选：
+
+- 自定义安装位置：`AGENTCHAT_BRIDGE_HOME=/opt/agentchat-bridge bash bridge_install.sh`
+- 先看不装：`curl http://<主机A>:8000/api/bridge/readme`
+
+**方式 B：下载分发包手工部署**（无法执行安装脚本时的兜底）
+
+下载同一个包（上面「带完整性校验」的前两步），解压后目录已齐全：
+
+```
+agentchat-bridge-x.y.z/
+├── remote_bridge.py        桥接器本体
+├── bridge_install.sh       一键安装脚本
+├── README.txt              快速开始
+└── REMOTE_AGENT_BRIDGE.md  完整文档（本文件）
+```
+
+完全手工（不经安装脚本）：
 
 ```bash
 mkdir -p ~/.agentchat/bridge && cd ~/.agentchat/bridge
-# 拷贝 remote_bridge.py 到此目录
+cp agentchat-bridge-*/remote_bridge.py .
 python3 -m venv .venv
 .venv/bin/pip install "websockets>=12.0" httpx
+# 手工写 bridge.toml + start.sh（参考 bridge_install.sh 的产物）
 ```
 
-> 仅需 **2 个第三方包**，其余全是标准库。不再依赖 `python-jose`。
+> 无需手工装包：分发包自带安装脚本；即便全手工，也只需 **2 个第三方包**
+> （`httpx`、`websockets`），其余全是标准库。
 
 ### 4.3 配置与运行
 

@@ -146,5 +146,6 @@ echo "       $RUNNER --check          # 只做环境自检"
 echo "       $RUNNER --config <路径>  # 使用指定配置文件"
 echo
 echo "  要后台常驻，可参考："
-echo "       docs/REMOTE_AGENT_BRIDGE.md  中的 systemd / launchd 章节"
+echo "       REMOTE_AGENT_BRIDGE.md  中的 systemd / launchd 章节"
+echo "       （随分发包提供；服务端地址见 bridge.toml 的 base-url）"
 echo
