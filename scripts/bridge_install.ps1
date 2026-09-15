@@ -109,6 +109,35 @@ if (-not (Test-Path $src)) {
 Copy-Item -Path $src -Destination (Join-Path $InstallDir 'remote_bridge.py') -Force
 Say-Ok "已安装 remote_bridge.py"
 
+# 推送工具：Windows 下用 PowerShell 包装（会话内可调用 agentchat-send.ps1）
+$sendSrc = Join-Path $scriptDir 'agentchat_send.sh'
+if (Test-Path $sendSrc) {
+    $ps1 = @'
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Message)
+$ErrorActionPreference = 'Stop'
+$url = $env:AGENTCHAT_PUSH_URL
+if (-not $url) { $url = 'http://127.0.0.1:8765/push' }
+$content = ($Message -join ' ')
+if (-not $content) { $content = $Input -join "`n" }
+if (-not $content) {
+    Write-Host "[错误] 用法: .\\agentchat-send.ps1 `"消息内容`"" -ForegroundColor Red
+    exit 1
+}
+try {
+    $r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'text/plain; charset=utf-8' -Body $content
+    if ($r.ok) { Write-Host "[完成] 已推送到频道 message_id=$($r.message_id)" -ForegroundColor Green }
+    else { Write-Host "[错误] 推送失败: $($r | ConvertTo-Json -Compress)" -ForegroundColor Red; exit 1 }
+} catch {
+    Write-Host "[错误] 推送失败: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "       请确认桥接器正在运行（本地推送服务默认 http://127.0.0.1:8765/push）" -ForegroundColor Yellow
+    exit 1
+}
+'@
+    [System.IO.File]::WriteAllText((Join-Path $InstallDir 'agentchat-send.ps1'), $ps1,
+                                   (New-Object System.Text.UTF8Encoding($false)))
+    Say-Ok "已安装推送工具 agentchat-send.ps1"
+}
+
 # ---------- 4. 虚拟环境与依赖 ----------
 $venvDir = Join-Path $InstallDir '.venv'
 $venvPy  = Join-Path $venvDir 'Scripts\python.exe'

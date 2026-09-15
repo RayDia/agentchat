@@ -63,6 +63,13 @@ fi
 cp "$SRC" "$INSTALL_DIR/remote_bridge.py"
 ok "已安装 remote_bridge.py"
 
+# 推送工具：让 agent session 内可直接向频道发消息
+if [ -f "$SCRIPT_DIR/agentchat_send.sh" ]; then
+    cp "$SCRIPT_DIR/agentchat_send.sh" "$INSTALL_DIR/agentchat-send"
+    chmod +x "$INSTALL_DIR/agentchat-send"
+    ok "已安装推送工具 agentchat-send"
+fi
+
 # ---------- 4. 创建虚拟环境并安装依赖 ----------
 info "创建虚拟环境…"
 if [ ! -d "$INSTALL_DIR/.venv" ]; then

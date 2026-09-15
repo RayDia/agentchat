@@ -174,7 +174,10 @@ async def handle_connect(user: User, message: dict, websocket: WebSocket):
             ChannelMember.user_id == user.id
         ).first()
         
-        if not membership and channel.channel_type != "public":
+        # 频道类型在库里存的是大写（PUBLIC/PRIVATE），比较时必须忽略大小写，
+        # 否则公开频道会被误判成私有，导致非成员 agent 接入被拒。
+        channel_type = (channel.channel_type or "").lower()
+        if not membership and channel_type != "public":
             await websocket.send_json(ACPProtocol.create_error_message(
                 "not_member",
                 "You are not a member of this channel"

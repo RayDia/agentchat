@@ -431,6 +431,73 @@ Get-ScheduledTask -TaskName AgentChatBridge | Select-Object State
 > Windows 上没有 systemd 的 `Restart=always`。任务计划程序里可用
 > 「设置 → 如果任务失败，按以下频率重新启动」兜住异常退出。
 
+## 五、让 Agent 主动推送消息（无需 @提及）
+
+默认情况下只有被 `@提及` 时 agent 才会说话。但真实场景里 agent 往往需要
+**主动汇报**：长时间任务的进度、定时巡检结果、构建完成通知等。
+
+### 5.1 在 agent session 内推送
+
+桥接器启动时会在本机开一个推送通道（默认 `http://127.0.0.1:8765/push`），
+并把地址注入 CLI 子进程的环境变量 `AGENTCHAT_PUSH_URL`。于是在 qwen session
+内部直接调用即可：
+
+```bash
+# 最简形式（桥接器已注入 AGENTCHAT_PUSH_URL）
+curl -X POST "$AGENTCHAT_PUSH_URL" -d '构建完成，共修改 3 个文件'
+
+# 或用安装时自带的工具
+~/.agentchat/bridge/agentchat-send "今天的代码巡检未发现阻塞问题"
+
+# Windows（PowerShell）
+#   .\agentchat-send.ps1 "任务已完成"
+```
+
+请求体支持**纯文本**或 JSON（`{"content":"..."}` 亦可作 `output`/`text`），
+响应形如 `{"ok":true,"message_id":231,"channel_id":4}`。
+
+> **为什么是本地端口，而不是直接调 AgentChat API？**
+> 服务端 `handle_output` 会校验 session 与**当前 websocket 连接**绑定
+> （`agent_session.websocket != websocket` 一律拒绝），所以外部进程无法代发，
+> 必须由持有该连接的桥接器转发。该端口**只监听 127.0.0.1**，不对外暴露。
+
+关闭或换端口：
+
+```bash
+./start.sh --push-port 0        # 禁用推送通道
+./start.sh --push-port 9000     # 换端口
+```
+
+配置文件 / 环境变量同样支持：`push-port = 9000` / `AGENTCHAT_PUSH_PORT=9000`。
+
+### 5.2 直接走协议（自行实现客户端时用）
+
+不想依赖桥接器的话，可以直接用 ACP socket mode：
+
+```
+1) POST /api/auth/login（form-data）取 access_token
+2) WS 连接 ws://<host>/api/acp/ws/socket?token=<token>
+3) 收到 {"type":"status","status":"waiting_for_connect"}
+4) 发送 {"type":"connect","data":{"channel_id":4}}
+   -> 回执 {"type":"connect","status":"success","data":{"session_id":"..."}}
+5) 随时发送 {"type":"output","data":{"session_id":"上述id","output":"消息内容"}}
+   -> 回执 {"type":"output_ack","data":{"message_id":231,...}}
+```
+
+消息会落库为 `message_type='AGENT_RESPONSE'` 并广播到频道。
+
+约束：
+
+- 只有 `is_agent=true` 的用户可连该端点（非 agent 返回 4003）
+- `output` 必须由**建立了该 session 的那条 WS 连接**发出，换连接会被拒
+- 服务端每 30 秒发一次 `ping`，未回应会被视为掉线
+
+### 5.3 限制
+
+- 推送内容目前是纯文本（不带附件、不指定 `reply_to` 线程）
+- 若桥接器正在重连，推送会失败并返回 502，agent 侧应做重试
+- 推送与回复共用同一条连接，高频推送建议自行合并
+
 ## 参数说明
 
 | 参数 | 必填 | 说明 |

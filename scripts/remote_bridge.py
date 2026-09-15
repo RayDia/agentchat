@@ -32,6 +32,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,12 +94,110 @@ async def login(base_url, username, password, timeout=20.0):
     return token, (body.get("user") or {})
 
 
+def _extract_content(raw, content_type=""):
+    """从推送请求体里提取内容，兼容 JSON 与纯文本两种写法。
+
+    支持：{"content":"文本"} / {"output":"文本"} / {"text":"文本"} / 纯文本
+    """
+    text = raw.decode("utf-8", "replace").strip() if raw else ""
+    if not text:
+        return ""
+    looks_json = "json" in (content_type or "").lower() or text[:1] in ("{", "[")
+    if looks_json:
+        try:
+            obj = json.loads(text)
+        except Exception:
+            return text
+        if isinstance(obj, dict):
+            return str(obj.get("content") or obj.get("output")
+                       or obj.get("text") or "")
+        return str(obj)
+    return text
+
+
+def start_push_server(bridge):
+    """在本机起一个极简 HTTP 服务，让同机的 agent session 能推送到频道。
+
+    为什么必须有这一跳：服务端的 handle_output 会校验 session 与当前
+    websocket 绑定（agent_session.websocket != websocket 一律拒绝），
+    所以外部进程无法直接复用桥接器的会话，只能由桥接器代为转发。
+
+    仅监听 127.0.0.1，不对外暴露。
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        logger.warning("无法获取事件循环，跳过本地推送服务")
+        return
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _reply(self, code, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type",
+                             "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except Exception:
+                pass
+
+        def do_GET(self):
+            self._reply(200, {
+                "ok": True,
+                "service": "agentchat-bridge-push",
+                "connected": bridge.ws is not None,
+                "channel_id": bridge.channel_id,
+                "session_ready": bool(bridge.acp_session_id),
+            })
+
+        def do_POST(self):
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            raw = self.rfile.read(n) if n else b""
+            content = _extract_content(raw, self.headers.get("Content-Type", ""))
+            if not content:
+                self._reply(400, {"ok": False, "error": "缺少推送内容"})
+                return
+            try:
+                fut = asyncio.run_coroutine_threadsafe(bridge.push(content), loop)
+                mid = fut.result(timeout=30)
+            except Exception as e:
+                self._reply(502, {"ok": False, "error": str(e)})
+                return
+            self._reply(200, {"ok": True, "message_id": mid,
+                              "channel_id": bridge.channel_id})
+
+        def log_message(self, fmt, *args):
+            logger.debug("[push-server] " + fmt % args)
+
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", int(bridge.push_port)), Handler)
+    except OSError as e:
+        logger.warning("本地推送服务启动失败（端口 %s 可能被占用）: %s",
+                       bridge.push_port, e)
+        return
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    logger.info("本地推送服务已就绪: http://127.0.0.1:%s/push"
+                "（agent session 内用 $AGENTCHAT_PUSH_URL 调用）",
+                bridge.push_port)
+    return srv
+
+
 class RemoteBridge:
     """把一个 qwen --acp 子进程桥接到远端 AgentChat 的某个频道。"""
 
     def __init__(self, base_url, channel_id, username, password,
                  cli_cmd=None, api_key=None, model=None,
-                 thread_id=None, resume_session_id=None, prompt_timeout=180):
+                 thread_id=None, resume_session_id=None, prompt_timeout=180,
+                 push_port=None):
         self.base_url = base_url.rstrip("/")
         self.channel_id = channel_id
         self.username = username
@@ -109,6 +208,8 @@ class RemoteBridge:
         self.thread_id = thread_id
         self.resume_session_id = resume_session_id
         self.prompt_timeout = prompt_timeout
+        # 本地推送通道端口：0 或 None 表示禁用
+        self.push_port = push_port
 
         self.token = None
         self.user_id = None
@@ -124,6 +225,9 @@ class RemoteBridge:
         self._accum = ""
         self._accum_lock = asyncio.Lock()
         self._login_lock = asyncio.Lock()
+        self._push_lock = asyncio.Lock()      # 串行化推送，避免 ack 串台
+        self._ack_waiter = None
+        self._push_server = None
         self._stopping = False
 
     # ---------------- 认证 ----------------
@@ -312,6 +416,40 @@ class RemoteBridge:
         return "[qwen 无内容返回（请检查 API Key 是否已配置）]"
 
     # ---------------- AgentChat 侧 ----------------
+    async def push(self, content, wait_ack=True, timeout=20.0):
+        """主动向频道推送一条消息（无需被 @提及）。
+
+        对应服务端 app/acp/endpoints.py 的 handle_output：落库为
+        message_type=AGENT_RESPONSE 并广播到频道。
+
+        返回落库后的 message_id（wait_ack=False 或超时则返回 None）。
+        """
+        if not content:
+            raise ValueError("推送内容不能为空")
+        if self.ws is None:
+            raise RuntimeError("尚未连接到 AgentChat")
+        if not self.acp_session_id:
+            raise RuntimeError("尚未拿到 ACP session_id（可能刚断线重连中）")
+
+        async with self._push_lock:
+            fut = None
+            if wait_ack:
+                fut = asyncio.get_event_loop().create_future()
+                self._ack_waiter = fut
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "output",
+                    "data": {"session_id": self.acp_session_id, "output": content},
+                }))
+                logger.info("[push] 已推送到频道 %s（%d 字）",
+                            self.channel_id, len(content))
+                if fut is None:
+                    return None
+                ack = await asyncio.wait_for(fut, timeout)
+                return (ack.get("data") or {}).get("message_id")
+            finally:
+                self._ack_waiter = None
+
     async def _on_input(self, data):
         inp = data.get("message", {})
         content = inp.get("content", "")
@@ -321,10 +459,10 @@ class RemoteBridge:
             reply = await self.prompt_qwen(content)
         except Exception as e:
             reply = f"[bridge 异常] {e}"
-        await self.ws.send(json.dumps({
-            "type": "output",
-            "data": {"session_id": self.acp_session_id, "output": reply},
-        }))
+        try:
+            await self.push(reply)
+        except RuntimeError as e:
+            logger.error("回复发送失败: %s", e)
 
     async def _loop(self):
         while not self._stopping:
@@ -340,6 +478,10 @@ class RemoteBridge:
                         logger.info("[agentchat] connect session=%s", self.acp_session_id)
                     elif t == "input":
                         await self._on_input(msg.get("data", {}))
+                    elif t == "output_ack":
+                        waiter = self._ack_waiter
+                        if waiter is not None and not waiter.done():
+                            waiter.set_result(msg)
                     elif t == "ping":
                         await self.ws.send(json.dumps({
                             "type": "pong",
@@ -388,6 +530,9 @@ class RemoteBridge:
             env["OPENAI_API_KEY"] = self.api_key
         if self.model:
             env["QWEN_MODEL"] = self.model
+        # 让 qwen session 内部能直接推送到频道
+        if self.push_port:
+            env["AGENTCHAT_PUSH_URL"] = f"http://127.0.0.1:{self.push_port}/push"
 
         logger.info("启动 qwen 子进程: %s", " ".join(self.cli_cmd))
         self.proc = await asyncio.create_subprocess_exec(
@@ -409,12 +554,34 @@ class RemoteBridge:
         self.ws = await websockets.connect(self.ws_url)
         await self.ws.send(json.dumps(
             {"type": "connect", "data": {"channel_id": self.channel_id}}))
+
+        # 先收 connect 回执拿到 ACP session_id —— 主动推送依赖它
+        self.acp_session_id = None
+        try:
+            first = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=15))
+            if first.get("type") == "connect" and first.get("status") == "success":
+                self.acp_session_id = (first.get("data") or {}).get("session_id")
+            else:
+                logger.warning("connect 回执异常: %s",
+                               json.dumps(first, ensure_ascii=False)[:200])
+        except Exception as e:
+            logger.warning("读取 connect 回执失败（推送能力暂不可用）: %s", e)
+
         logger.info("已连接 AgentChat(%s, channel=%s) 与 qwen(session=%s)",
                     self.base_url, self.channel_id, self.qwen_session_id)
+
+        self._push_server = start_push_server(self)
         await self._loop()
 
     async def stop(self):
         self._stopping = True
+        if self._push_server:
+            try:
+                self._push_server.shutdown()
+                self._push_server.server_close()
+            except Exception:
+                pass
+            self._push_server = None
         for closer in (
             lambda: self.ws.close() if self.ws else asyncio.sleep(0),
         ):
@@ -713,6 +880,9 @@ def main():
                    help="覆盖 CLI 命令，逗号分隔")
     p.add_argument("--api-key", default=None)
     p.add_argument("--model", default=None)
+    p.add_argument("--push-port", type=int, default=None,
+                   help="本地推送服务端口；agent session 内可 POST 到此端口向频道"
+                        "发送消息。0 表示禁用（默认 8765）")
     p.add_argument("--check", action="store_true",
                    help="只做环境自检（检查 CLI/依赖/连通性）后退出")
     args = p.parse_args()
@@ -744,6 +914,14 @@ def main():
     model = pick("model")
     cli_cmd_raw = pick("cli_cmd")
     resume = pick("resume_session")
+    push_port_raw = pick("push_port", "AGENTCHAT_PUSH_PORT")
+
+    # 本地推送通道：默认开启 8765；显式设 0 表示禁用
+    try:
+        push_port = 8765 if push_port_raw in (None, "") \
+            else int(str(push_port_raw).strip())
+    except ValueError:
+        p.error(f"--push-port 必须是整数，当前为 {push_port_raw!r}")
 
     missing = [n for n, v in (("--base-url", base_url), ("--channel-id", channel_id),
                               ("--username", username), ("--password", password))
@@ -789,6 +967,7 @@ def main():
         model=model,
         thread_id=thread_id,
         resume_session_id=resume,
+        push_port=push_port,
     )
 
     async def _run():
