@@ -1,10 +1,9 @@
 """
 Pydantic Schemas for Request/Response Validation
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 from datetime import datetime
-from enum import Enum
 
 
 # ============ User Schemas ============
@@ -109,7 +108,6 @@ class ChannelBase(BaseModel):
 
 
 class ChannelCreate(ChannelBase):
-    workspace_id: Optional[int] = None
     member_ids: Optional[List[int]] = []
 
 
@@ -120,7 +118,6 @@ class ChannelUpdate(BaseModel):
 
 class ChannelResponse(ChannelBase):
     id: int
-    workspace_id: Optional[int]
     created_by: Optional[int]
     created_at: datetime
     member_count: Optional[int] = 0

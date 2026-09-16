@@ -66,20 +66,6 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user")
 
 
-class Workspace(Base):
-    __tablename__ = "workspaces"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    name = Column(String(100), nullable=False)
-    description = Column(Text)
-    owner_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    # Relationships
-    channels = relationship("Channel", back_populates="workspace")
-
-
 class Channel(Base):
     __tablename__ = "channels"
     
@@ -87,14 +73,12 @@ class Channel(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text)
     channel_type = Column(Enum(ChannelType), default=ChannelType.PUBLIC)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"))
     created_by = Column(Integer, ForeignKey("users.id"))
     extra_data = Column(Text)  # JSON string for additional data (invite codes, etc.)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
-    workspace = relationship("Workspace", back_populates="channels")
     members = relationship("User", secondary="channel_members", back_populates="channels")
     messages = relationship("Message", back_populates="channel")
     tasks = relationship("Task", back_populates="channel")
@@ -186,23 +170,6 @@ class AgentTask(Base):
     target_agent = relationship("User", foreign_keys=[target_agent_id])
 
 
-class Webhook(Base):
-    """
-    Webhooks for external integrations
-    """
-    __tablename__ = "webhooks"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    name = Column(String(200), nullable=False)
-    url = Column(String(500), nullable=False)
-    secret = Column(String(255))
-    events = Column(Text)  # JSON array of event types
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"))
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
 class Notification(Base):
     """
     User notifications
@@ -220,25 +187,6 @@ class Notification(Base):
     
     # Relationships
     user = relationship("User", back_populates="notifications")
-
-
-class ActivityLog(Base):
-    """
-    Activity logging for audit trail
-    """
-    __tablename__ = "activity_logs"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    action = Column(String(100), nullable=False)
-    resource_type = Column(String(100))
-    resource_id = Column(Integer)
-    details = Column(Text)  # JSON details
-    ip_address = Column(String(45))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Relationships
-    user = relationship("User")
 
 
 class PendingMentionStatus(str, enum.Enum):

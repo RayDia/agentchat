@@ -22,6 +22,9 @@ logs/
 # 用户上传的文件（运行时数据，不入库）
 uploads/
 
+# 数据库备份（清理废弃表前的快照，含真实数据，不入库）
+backups/
+
 # 前端
 node_modules/
 frontend/dist/

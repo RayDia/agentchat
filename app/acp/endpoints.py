@@ -3,16 +3,14 @@ ACP Socket Mode WebSocket Endpoints
 用于外部Agent(如Qwen Code、Pi Agent、OpenCode)通过Socket Mode连接
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException
-from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from typing import Optional
 import json
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from ..database import SessionLocal
 from ..models import User, Message, Channel, ChannelMember
-from ..auth import get_current_user
 from ..config import settings
 from ..websocket.manager import manager as connection_manager
 import logging
@@ -20,7 +18,7 @@ import logging
 logger = logging.getLogger("AgentChat.ACP")
 from .protocol import (
     ACPProtocol,
-    SessionManager,
+    AgentSession,
     session_manager
 )
 
@@ -118,7 +116,8 @@ async def socket_mode_endpoint(
             session_manager.remove_session(agent_session.session_id)
 
 
-async def handle_socket_message(user: User, message: dict, websocket: WebSocket, agent_session: Optional['AgentSession']):
+async def handle_socket_message(user: User, message: dict, websocket: WebSocket,
+                                agent_session: Optional[AgentSession]):
     """处理来自Agent的消息
 
     返回（可能被 connect 更新后的）会话，便于调用方维护心跳与断线清理。

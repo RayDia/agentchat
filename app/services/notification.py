@@ -3,9 +3,8 @@ Notification Service
 处理@提及通知、系统通知等
 """
 import re
-import traceback
 from sqlalchemy.orm import Session
-from ..models import User, Message, Channel, Notification, ChannelMember
+from ..models import User, Message, Notification, Channel
 from ..websocket.manager import manager
 
 
@@ -87,44 +86,10 @@ class NotificationService:
                         "created_at": notification.created_at.isoformat() if notification.created_at else None
                     }
                 })
-                print(f"DEBUG notification: WebSocket sent successfully")
+                print("DEBUG notification: WebSocket sent successfully")
             except Exception as e:
                 print(f"ERROR processing mention {username}: {e}")
                 traceback.print_exc()
         
         self.db.commit()
         return notifications
-    
-    async def send_system_notification(
-        self, 
-        user_id: int, 
-        title: str, 
-        content: str, 
-        link: str = None,
-        notification_type: str = "system"
-    ):
-        """发送系统通知"""
-        notification = Notification(
-            user_id=user_id,
-            type=notification_type,
-            title=title,
-            content=content,
-            link=link
-        )
-        self.db.add(notification)
-        self.db.commit()
-        
-        # WebSocket推送
-        await manager.send_to_user(user_id, {
-            "type": "notification",
-            "data": {
-                "id": notification.id,
-                "type": notification_type,
-                "title": title,
-                "content": content,
-                "link": link,
-                "created_at": notification.created_at.isoformat() if notification.created_at else None
-            }
-        })
-        
-        return notification

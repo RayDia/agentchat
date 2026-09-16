@@ -31,10 +31,10 @@ def get_db():
 
 
 def init_db():
-    """Initialize database tables"""
-    # 确保 ACP 桥接持久化表被注册（thread -> session）
-    try:
-        from .acp.models import ACPBridgeSession, ACPBridgeMessage  # noqa: F401
-    except Exception:
-        pass
+    """Initialize database tables
+
+    注意：acp_sessions / acp_messages 两张旧 CLI bridge 表（app/acp/models.py）
+    已成为死代码，不再注册到 Base.metadata；对应的库表已重命名为
+    _deprecated_* 归档，不再由 ORM 管理。
+    """
     Base.metadata.create_all(bind=engine)

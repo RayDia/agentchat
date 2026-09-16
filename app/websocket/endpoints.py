@@ -2,17 +2,14 @@
 WebSocket Endpoints
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from ..config import settings
 from ..database import SessionLocal
-from ..models import User, Message, Channel, ChannelMember
+from ..models import User, Message, ChannelMember
 from .manager import manager
-from ..acp import session_manager
 from ..services.mention_service import dispatch_mentions
 import json
-from datetime import datetime, timezone
-import re
+from datetime import datetime
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -171,7 +168,7 @@ async def handle_chat_message(user: User, message: dict):
         print(f"[WS] 当前频道成员: {manager.channel_members.get(channel_id, set())}")
         
         await manager.send_to_channel(channel_id, broadcast_message)  # 包含发送者
-        print(f"[WS] 消息广播完成")
+        print("[WS] 消息广播完成")
 
         # 转发@提及给Agent：在线实时推送，离线入队待 agent 上线补发
         try:

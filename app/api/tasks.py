@@ -1,13 +1,13 @@
 """
 Task Management API Routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 import json
 
 from ..database import get_db
-from ..models import Task, AgentTask, User, Channel
+from ..models import Task, AgentTask, User
 from ..schemas import TaskCreate, TaskUpdate, TaskResponse, AgentTaskCreate, AgentTaskResponse, PaginatedResponse
 from ..auth import get_current_user, require_agent
 

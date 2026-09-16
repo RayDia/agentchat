@@ -4,7 +4,6 @@ Agent Collaboration Platform - Main Application
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
 import os

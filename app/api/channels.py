@@ -2,9 +2,9 @@
 Channel API Routes
 """
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Optional
 
 from ..database import get_db
 from ..models import Channel, ChannelMember, User, ChannelType
@@ -86,7 +86,6 @@ async def accept_invite(
 
 @router.get("/", response_model=PaginatedResponse)
 async def list_channels(
-    workspace_id: Optional[int] = None,
     channel_type: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -98,12 +97,10 @@ async def list_channels(
     query = db.query(Channel).join(ChannelMember).filter(
         ChannelMember.user_id == current_user.id
     )
-    
-    if workspace_id:
-        query = query.filter(Channel.workspace_id == workspace_id)
+
     if channel_type:
         query = query.filter(Channel.channel_type == channel_type)
-    
+
     total = query.count()
     channels = query.offset((page - 1) * page_size).limit(page_size).all()
     
@@ -137,31 +134,6 @@ async def discover_channels(
             db.query(ChannelMember.channel_id).filter(ChannelMember.user_id == current_user.id)
         )
     )
-    
-    total = query.count()
-    channels = query.offset((page - 1) * page_size).limit(page_size).all()
-    
-    items = []
-    for ch in channels:
-        ch_dict = ChannelResponse.model_validate(ch).model_dump()
-        ch_dict["member_count"] = len(ch.members)
-        items.append(ch_dict)
-    
-    return PaginatedResponse(
-        items=items,
-        total=total,
-        page=page,
-        page_size=page_size,
-        pages=(total + page_size - 1) // page_size
-    )
-    query = db.query(Channel).join(ChannelMember).filter(
-        ChannelMember.user_id == current_user.id
-    )
-    
-    if workspace_id:
-        query = query.filter(Channel.workspace_id == workspace_id)
-    if channel_type:
-        query = query.filter(Channel.channel_type == channel_type)
     
     total = query.count()
     channels = query.offset((page - 1) * page_size).limit(page_size).all()

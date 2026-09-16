@@ -3,7 +3,6 @@ ACP (Agent Communication Protocol) Protocol Definitions
 用于外部Agent(如Qwen Code、Pi Agent、OpenCode)通过Socket Mode连接
 """
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone

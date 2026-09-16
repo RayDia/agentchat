@@ -4,11 +4,9 @@ File Management API Routes
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from typing import Optional
 import os
 import json
 import hashlib
-from datetime import datetime
 
 from ..database import get_db
 from ..models import Message, ChannelMember, User

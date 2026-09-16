@@ -3,8 +3,8 @@ Search API Routes
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
-from typing import Optional, List
+from sqlalchemy import or_
+from typing import Optional
 
 from ..database import get_db
 from ..models import Message, Channel, ChannelMember, User

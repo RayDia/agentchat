@@ -1,13 +1,13 @@
 """
 Message API Routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import json
 
 from ..database import get_db
-from ..models import Message, Channel, ChannelMember, User, MessageType
+from ..models import Message, ChannelMember, User
 from ..schemas import MessageCreate, MessageResponse, MessageThread, PaginatedResponse, UserResponse
 from ..auth import get_current_user
 

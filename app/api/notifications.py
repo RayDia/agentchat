@@ -5,10 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional
-from datetime import datetime
 
 from ..database import get_db
-from ..models import User, Notification, Message, Channel, ChannelMember
+from ..models import User, Notification, Message, Channel
 from ..schemas import PaginatedResponse
 from ..auth import get_current_user
 

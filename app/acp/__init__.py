@@ -4,15 +4,12 @@ ACP (Agent Communication Protocol) Module
 """
 
 from .protocol import ACPProtocol, AgentSession, SessionManager, session_manager
-from .manager import SocketManager, manager
 from .endpoints import router
 
 __all__ = [
     "ACPProtocol",
-    "AgentSession", 
+    "AgentSession",
     "SessionManager",
     "session_manager",
-    "SocketManager",
-    "manager",
     "router"
 ]
