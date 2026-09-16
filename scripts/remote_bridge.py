@@ -242,6 +242,83 @@ def start_push_server(bridge):
     return srv
 
 
+def session_store_path():
+    """桥接器本地会话映射文件的位置。
+
+    放在安装目录优先（与 bridge.toml 同级），否则退回用户主目录。
+    """
+    try:
+        here = Path(__file__).resolve().parent
+        if here.is_dir():
+            return here / "sessions.json"
+    except Exception:
+        pass
+    try:
+        return Path.home() / ".agentchat" / "bridge" / "sessions.json"
+    except Exception:
+        return None
+
+
+class SessionStore:
+    """thread_id -> qwen session_id 的本地持久化。
+
+    为什么需要它：qwen 的会话上下文只存在于 qwen 侧。桥接器重启后如果
+    不带 sessionId 直接 session/new，会得到全新会话，agent 记不住此前的
+    对话（实测确认）。把映射存下来，重启后走 session/resume 附加原会话，
+    上下文即可延续。
+
+    为什么不用服务端的 acp_agent_sessions 表：那张表记录的是
+    「agent 连上了哪个频道」，是服务端的会话状态；而这里需要的是
+    「本机这个 thread 对应 qwen 的哪个会话」，属于客户端本地状态。
+    两者语义不同，且分发包场景下桥接器未必有数据库访问权。
+    """
+
+    def __init__(self, path=None):
+        self.path = Path(path) if path else session_store_path()
+        self._data = {}
+        self._load()
+
+    def _load(self):
+        if not self.path or not self.path.is_file():
+            return
+        try:
+            raw = self.path.read_text(encoding="utf-8-sig", errors="replace")
+            obj = json.loads(raw) if raw.strip() else {}
+            if isinstance(obj, dict):
+                self._data = {str(k): str(v) for k, v in obj.items() if v}
+        except Exception as e:
+            logger.warning("会话映射文件读取失败(%s): %s", self.path, e)
+
+    def _save(self):
+        if not self.path:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            tmp.replace(self.path)      # 原子替换，避免写一半损坏
+        except Exception as e:
+            logger.warning("会话映射写入失败(%s): %s", self.path, e)
+
+    def get(self, thread_id):
+        if not thread_id:
+            return None
+        return self._data.get(str(thread_id))
+
+    def set(self, thread_id, session_id):
+        if not thread_id or not session_id:
+            return
+        if self._data.get(str(thread_id)) == str(session_id):
+            return
+        self._data[str(thread_id)] = str(session_id)
+        self._save()
+
+    def forget(self, thread_id):
+        if thread_id and self._data.pop(str(thread_id), None) is not None:
+            self._save()
+
+
 class RemoteBridge:
     """把一个 qwen --acp 子进程桥接到远端 AgentChat 的某个频道。"""
 
@@ -249,7 +326,8 @@ class RemoteBridge:
                  cli_cmd=None, api_key=None, model=None,
                  thread_id=None, resume_session_id=None, prompt_timeout=180,
                  push_port=None, permission_mode="none",
-                 permission_allowlist=None, mcp_enabled=True):
+                 permission_allowlist=None, mcp_enabled=True,
+                 session_store=None, persist_session=True):
         self.base_url = base_url.rstrip("/")
         self.channel_id = channel_id
         self.username = username
@@ -268,6 +346,15 @@ class RemoteBridge:
         # 是否向 CLI 注入 AgentChat MCP 工具（让 agent 能直接调用推送）
         self.mcp_enabled = mcp_enabled
         self.mcp_config_path = None
+        # thread -> qwen session 的本地持久化（跨重启保持上下文）
+        self.persist_session = persist_session
+        if session_store is not None:
+            self.store = session_store
+        elif persist_session and thread_id:
+            self.store = SessionStore()
+        else:
+            self.store = None      # 未指定 thread_id 时无从索引，不持久化
+        self.resumed_from_store = False
 
         self.token = None
         self.user_id = None
@@ -478,6 +565,19 @@ class RemoteBridge:
         }, timeout=30)
         logger.info("[qwen initialize] %s", json.dumps(resp, ensure_ascii=False)[:200])
 
+    def _resolve_stored_session(self):
+        """从本地映射里取出该 thread 之前用过的 qwen session id。
+
+        优先级：显式 --resume-session > 本地映射。
+        """
+        if self.resume_session_id:
+            return self.resume_session_id, "显式指定"
+        if self.store and self.thread_id:
+            cached = self.store.get(self.thread_id)
+            if cached:
+                return cached, f"本地映射(thread={self.thread_id})"
+        return None, None
+
     async def _qwen_session_new(self):
         sid = self.resume_session_id or str(uuid.uuid4())
         params = {"cwd": os.getcwd(), "mcpServers": [],
@@ -508,14 +608,40 @@ class RemoteBridge:
         return True, None
 
     async def _qwen_ensure_session(self):
-        if self.resume_session_id:
-            ok, err = await self._qwen_session_resume(self.resume_session_id)
+        """建立 qwen 会话：优先 resume 已有会话以延续上下文。
+
+        顺序：
+          1. 显式 --resume-session 或本地映射中的会话 -> 尝试 session/resume
+          2. resume 失败（会话已被 qwen 回收等）-> 回退 session/new 新建
+        """
+        target, source = self._resolve_stored_session()
+        if target:
+            ok, err = await self._qwen_session_resume(target)
             if ok:
+                self.resumed_from_store = True
+                logger.info("[会话复用] 已附加原会话 %s（来源：%s），上下文延续",
+                            self.qwen_session_id, source)
                 return
-            logger.warning("session/resume(%s) 失败(%s)，回退新建",
-                           self.resume_session_id,
-                           (err or {}).get("message", err))
+            reason = (err or {}).get("message", err)
+            logger.warning("[会话复用] 附加 %s 失败（%s），回退为新建会话。"
+                           "本节对话上下文将从头开始", target, reason)
+            # 映射已失效，清掉避免每次都白试一次
+            if self.store and self.thread_id and target != self.resume_session_id:
+                self.store.forget(self.thread_id)
+
         await self._qwen_session_new()
+
+    def _remember_session(self):
+        """把当前 qwen 会话记到本地映射，供下次启动 resume。
+
+        只在会话**确实产生过对话**后调用：qwen 的会话文件要到首次 prompt
+        才落盘，只 session/new 不对话的会话没有持久化记录，下次 resume 必然
+        报 "Resource not found"，白白多一次失败的往返。
+        """
+        if self.store and self.thread_id and self.qwen_session_id:
+            self.store.set(self.thread_id, self.qwen_session_id)
+            logger.debug("已记录会话映射: %s -> %s",
+                         self.thread_id, self.qwen_session_id)
 
     async def prompt_qwen(self, content):
         async with self._accum_lock:
@@ -525,6 +651,8 @@ class RemoteBridge:
             "cwd": os.getcwd(),
             "prompt": [{"type": "text", "text": content}],
         }, timeout=self.prompt_timeout)
+        # 会话已实际使用，此时 qwen 才把会话落盘，记下映射供下次 resume
+        self._remember_session()
         async with self._accum_lock:
             accum = self._accum
         if accum:
@@ -1121,6 +1249,15 @@ def main():
                         "agent 可直接调用 agentchat_send 推送消息，无需 shell")
     p.add_argument("--no-mcp", dest="mcp", action="store_false",
                    help="不注入 MCP 工具")
+    p.add_argument("--no-persist-session", dest="persist_session",
+                   action="store_false", default=True,
+                   help="不记住 thread 与 CLI 会话的映射。默认会记，"
+                        "使桥接器重启后能 resume 原会话、延续对话上下文")
+    p.add_argument("--session-store", default=None,
+                   help="会话映射文件路径（默认 bridge.toml 同目录的 "
+                        "sessions.json）")
+    p.add_argument("--forget-session", action="store_true", default=False,
+                   help="启动前清除该 thread 的会话映射，强制开始全新会话")
     p.add_argument("--check", action="store_true",
                    help="只做环境自检（检查 CLI/依赖/连通性）后退出")
     args = p.parse_args()
@@ -1200,6 +1337,20 @@ def main():
     logger.info("接入配置: %s | channel=%s | agent=%s | thread=%s",
                 base_url, channel_id, username, thread_id)
 
+    # 会话映射：跨桥接器重启保持对话上下文
+    store = None
+    if args.persist_session:
+        store = SessionStore(args.session_store)
+        if args.forget_session:
+            store.forget(thread_id)
+            logger.info("已按 --forget-session 清除 thread=%s 的会话映射", thread_id)
+        cached = store.get(thread_id)
+        if cached:
+            logger.info("发现已记录会话: %s -> %s（启动后将尝试 resume）",
+                        thread_id, cached)
+        if store.path:
+            logger.debug("会话映射文件: %s", store.path)
+
     bridge = RemoteBridge(
         base_url=base_url,
         channel_id=channel_id,
@@ -1214,6 +1365,8 @@ def main():
         permission_mode=perm_mode,
         permission_allowlist=perm_list,
         mcp_enabled=args.mcp,
+        session_store=store,
+        persist_session=args.persist_session,
     )
 
     async def _run():
