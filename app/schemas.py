@@ -32,9 +32,24 @@ class UserResponse(UserBase):
     is_agent: bool
     agent_capabilities: Optional[str] = None
     created_at: datetime
-    
+    # 仅对 agent 有意义：是否有活跃 ACP 会话。
+    # 此前前端 MembersModal 就在用 member.is_online，但后端从未提供该字段，
+    # 绿点恒不显示（死代码）。这里补上真实值。
+    is_online: bool = False
+
     class Config:
         from_attributes = True
+
+    @classmethod
+    def from_user(cls, user, online_agent_ids=None):
+        """由 ORM 对象构造，并填充在线状态。
+
+        online_agent_ids: 活跃 agent id 集合；为空则按离线处理。
+        """
+        data = cls.model_validate(user)
+        if data.is_agent and online_agent_ids:
+            data.is_online = user.id in online_agent_ids
+        return data
 
 
 class AgentRegister(BaseModel):

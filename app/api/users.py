@@ -42,14 +42,18 @@ async def get_channel_members(
     ).all()
     
     # Get user details and exclude current user
+    # 带上 agent 在线状态，供前端 @提及 列表标注
+    from ..acp import session_manager
+    online = session_manager.get_online_agent_ids(channel_id)
+
     result = []
     for member in members:
         if member.user_id == current_user.id:
             continue
         user = db.query(User).filter(User.id == member.user_id).first()
         if user:
-            result.append(UserResponse.model_validate(user).model_dump())
-    
+            result.append(UserResponse.from_user(user, online).model_dump())
+
     return {"members": result, "total": len(result)}
 
 
@@ -112,8 +116,10 @@ async def list_agents(
     # Filter by capability if specified
     items = []
     import json
+    from ..acp import session_manager
+    online = session_manager.get_online_agent_ids()
     for agent in agents:
-        agent_dict = UserResponse.model_validate(agent).model_dump()
+        agent_dict = UserResponse.from_user(agent, online).model_dump()
         if capability and agent.agent_capabilities:
             capabilities = json.loads(agent.agent_capabilities)
             if capability in capabilities:

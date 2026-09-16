@@ -282,3 +282,30 @@ class PendingMention(Base):
     message = relationship("Message")
     agent = relationship("User", foreign_keys=[agent_id])
     sender = relationship("User", foreign_keys=[sender_id])
+
+
+class ACPSessionRecord(Base):
+    """
+    ACP agent 会话的持久化记录。
+
+    此前 SessionManager 把会话放在纯内存字典里，服务端一重启会话全丢：
+    - agent 的"在线"状态无法跨重启判断
+    - 客户端 resume（--resume-session）失败，只能重建会话
+    本表保存会话元数据；websocket 连接本身无法持久化，重启后 is_alive
+    一律按 False 恢复（需 agent 重新 connect）。
+
+    注意表名用 acp_agent_sessions 而非 acp_sessions：后者已被 app/acp/models.py
+    的 ACPBridgeSession（旧 CLI bridge，已成死代码但表里有历史数据）占用，
+    且字段结构不同，不能共用。
+    """
+    __tablename__ = "acp_agent_sessions"
+
+    session_id = Column(String(64), primary_key=True, index=True)
+    agent_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    agent_username = Column(String(100), nullable=False)
+    agent_display_name = Column(String(100))
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    channel_name = Column(String(100))
+    connected_at = Column(DateTime(timezone=True), default=func.now())
+    last_heartbeat = Column(DateTime(timezone=True), default=func.now())
+    is_alive = Column(Boolean, default=True)

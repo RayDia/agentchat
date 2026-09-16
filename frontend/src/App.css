@@ -1474,3 +1474,58 @@ body {
   color: var(--text-muted);
 }
 
+/* @提及列表中的 agent 在线状态 */
+.mention-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+.mention-status.online { color: var(--online); }
+.mention-status.offline { color: var(--text-muted); }
+
+.mention-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mention-status-dot.online {
+  background: var(--online);
+  box-shadow: 0 0 0 2px rgba(43, 172, 118, 0.2);
+}
+
+.mention-status-dot.offline {
+  background: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* 离线成员整行弱化，进一步提示"点了不会立刻回复" */
+.mention-item:has(.mention-status.offline) .mention-name {
+  opacity: 0.75;
+}
+
+/* 消息气泡上的"待 agent 上线"标记 */
+.mention-queued-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 10px;
+  background: rgba(107, 114, 128, 0.18);
+  color: var(--text-muted);
+  border: 1px solid rgba(107, 114, 128, 0.35);
+  white-space: nowrap;
+}
+
+.mention-queued-tag i {
+  font-size: 10px;
+}
+

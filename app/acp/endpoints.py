@@ -197,6 +197,7 @@ async def handle_connect(user: User, message: dict, websocket: WebSocket):
             existing_session.is_alive = True
             existing_session.last_heartbeat = datetime.now(timezone.utc)
             agent_session = existing_session
+            session_manager._persist(existing_session)
         else:
             agent_session = session_manager.create_session(
                 agent_id=user.id,

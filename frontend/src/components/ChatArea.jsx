@@ -12,7 +12,7 @@ const ChatArea = ({
   onOpenUserMenu 
 }) => {
   const { user } = useAuth();
-  const { connected, sendMessage, messages, joinChannel } = useWebSocket();
+  const { connected, sendMessage, messages, joinChannel, queuedMentions } = useWebSocket();
   const [messagesList, setMessagesList] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(true);
@@ -302,6 +302,9 @@ const ChatArea = ({
             )}
             {messagesList.map((msg, index) => {
               const isOwnMessage = msg.sender?.id === user?.id || msg.is_local;
+              // 被 @ 的 agent 离线时，消息会排队等待其上线处理，
+              // 服务端通过 mention_queued 帧告知发送者
+              const queued = queuedMentions?.[msg.id];
               return (
                 <div
                   key={msg.id || index}
@@ -318,6 +321,14 @@ const ChatArea = ({
                         {msg.sender?.display_name || msg.sender?.username || '未知'}
                       </span>
                       {msg.sender?.is_agent && <span className="agent-tag">AGENT</span>}
+                      {queued && isOwnMessage && (
+                        <span
+                          className="mention-queued-tag"
+                          title="被 @ 的 agent 当前离线，消息已排队，待其上线后自动处理"
+                        >
+                          <i className="fas fa-clock"></i> 待 agent 上线
+                        </span>
+                      )}
                       <span className="message-time">{formatTime(msg.created_at)}</span>
                     </div>
                     <div className="message-text">{formatMessageContent(msg.content)}</div>

@@ -19,6 +19,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     stream=sys.stdout,
 )
+logger = logging.getLogger("AgentChat.Main")
 
 from .config import settings
 from .database import init_db
@@ -35,6 +36,14 @@ async def lifespan(app: FastAPI):
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     init_db()
     print("Database initialized")
+
+    # 载入历史 ACP 会话（全部按离线恢复：连接无法跨进程持久化，
+    # 等 agent 用 --resume-session 重连时再匹配到原会话）
+    from .acp import session_manager
+    restored = session_manager.load_persisted_sessions()
+    if restored:
+        logger.info("已载入 %d 个历史 agent 会话（均置为离线）", restored)
+
     yield
     # Shutdown
     print("Shutting down...")

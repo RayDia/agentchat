@@ -7,6 +7,10 @@ export const WebSocketProvider = ({ children }) => {
   const { user } = useAuth();
   const [messages, setMessages] = useState({});
   const [connected, setConnected] = useState(false);
+  // agentId -> 是否在线（来自 agent_status 广播，覆盖接口拉取的初始值）
+  const [agentStatus, setAgentStatus] = useState({});
+  // messageId -> 排队信息（agent 离线，消息待其上线处理）
+  const [queuedMentions, setQueuedMentions] = useState({});
   const wsRef = useRef(null);
   const reconnectTimeout = useRef(null);
 
@@ -96,6 +100,27 @@ export const WebSocketProvider = ({ children }) => {
       case 'typing':
         // Handle typing indicator
         break;
+      case 'agent_status':
+        // 服务端在 agent 上线/断线时广播，用于实时更新 @提及 列表里的状态点。
+        // 若不消费，状态只会在重新拉成员列表时刷新，容易显示成陈旧的"在线"。
+        if (data.data) {
+          const agentId = data.data.agent_id;
+          const online = data.event === 'agent_connected';
+          if (agentId != null) {
+            setAgentStatus(prev => ({ ...prev, [agentId]: online }));
+          }
+        }
+        break;
+      case 'mention_queued':
+        // @提及 的目标 agent 离线，消息已入队等待其上线处理
+        if (data.data) {
+          setQueuedMentions(prev => {
+            const key = data.data.message_id;
+            if (prev[key]) return prev;
+            return { ...prev, [key]: data.data };
+          });
+        }
+        break;
       case 'presence':
         // Ignore presence messages
         break;
@@ -128,7 +153,9 @@ export const WebSocketProvider = ({ children }) => {
     connected,
     messages,
     sendMessage,
-    joinChannel
+    joinChannel,
+    agentStatus,
+    queuedMentions
   };
 
   return (

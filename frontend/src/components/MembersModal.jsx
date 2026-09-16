@@ -16,13 +16,10 @@ const MembersModal = ({ channel, onClose }) => {
     if (!channel?.id) return;
     try {
       setLoading(true);
-      // 使用正确的API端点获取频道详情（包含成员列表）
-      const response = await fetch(`/api/channels/${channel.id}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
-      const data = await response.json();
+      // 此前这里拉的是 /api/channels/{id}，但该接口并不返回 members 字段，
+      // 所以成员列表恒为空、下面的在线绿点永不显示（死代码）。
+      // 改用真正的成员接口，它现在会返回 agent 的 is_online 状态。
+      const data = await api.getChannelMembers(channel.id);
       setMembers(data.members || []);
     } catch (err) {
       setError(err.message);
