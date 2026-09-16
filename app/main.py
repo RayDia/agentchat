@@ -135,4 +135,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    # 刻意不加 reload：uvicorn 热重载会残留旧的 socket accept 回调，
+    # 导致事件循环狂刷 accept 失败堆栈（实测约 2GB/分钟，曾写满根分区）。
+    # 需要热重载时请用：uvicorn app.main:app --reload
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000)

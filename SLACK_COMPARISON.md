@@ -1,290 +1,86 @@
 # Slack 功能对比与完整性检查
 
+> 最后更新：2026-09-16
+>
+> 本表用于对照 Slack 评估功能覆盖度。**请以代码为准**：
+> 标「已实现」的功能均有对应的 API 端点与前端入口。
+
 ## 功能对比表
 
-| 功能类别 | Slack 功能 | 当前实现状态 | 完成度 |
-|---------|-----------|-------------|--------|
-| **1. 工作空间** | 创建/切换工作空间 | ⚠️ 部分完成 | 30% |
-| | 邀请成员 | ❌ 未实现 | 0% |
-| | 工作空间设置 | ❌ 未实现 | 0% |
-| **2. 频道** | 创建频道 | ✅ 已完成 | 100% |
-| | 公开/私有/DM | ✅ 已完成 | 100% |
-| | 加入/退出频道 | ✅ 已完成 | 100% |
-| | 邀请成员 | ✅ 已完成 | 100% |
-| | 频道搜索 | ❌ 未实现 | 0% |
-| | 频道存档 | ❌ 未实现 | 0% |
-| **3. 消息** | 发送消息 | ✅ 已完成 | 100% |
-| | 编辑消息 | ✅ 已完成 | 100% |
-| | 删除消息 | ✅ 已完成 | 100% |
-| | 回复/线程 | ✅ 已完成 | 100% |
-| | @提及 | ⚠️ 存储但未处理 | 50% |
-| | 消息搜索 | ❌ 未实现 | 0% |
-| | 消息固定 | ❌ 未实现 | 0% |
-| | 消息书签 | ❌ 未实现 | 0% |
-| | 表情反应 | ✅ 已完成 | 100% |
-| | 消息格式化 | ❌ 未实现 | 0% |
-| **4. 文件** | 文件上传 | ❌ 未实现 | 0% |
-| | 文件预览 | ❌ 未实现 | 0% |
-| | 文件搜索 | ❌ 未实现 | 0% |
-| **5. 用户** | 用户注册 | ✅ 已完成 | 100% |
-| | 用户登录 | ✅ 已完成 | 100% |
-| | 个人资料 | ✅ 已完成 | 100% |
-| | 在线状态 | ✅ 已完成 | 100% |
-| | 用户状态 | ❌ 未实现 | 0% |
-| | 用户搜索 | ⚠️ 基础搜索 | 50% |
-| **6. 通知** | 推送通知 | ❌ 未实现 | 0% |
-| | 邮件通知 | ❌ 未实现 | 0% |
-| | 通知偏好 | ❌ 未实现 | 0% |
-| **7. 集成** | Webhook | ⚠️ 数据模型有，无实现 | 20% |
-| | Bot 集成 | ❌ 未实现 | 0% |
-| | Slash Commands | ❌ 未实现 | 0% |
-| | 外部应用 | ❌ 未实现 | 0% |
-| **8. 管理** | 成员管理 | ⚠️ 部分完成 | 40% |
-| | 权限管理 | ⚠️ 基础RBAC | 30% |
-| | 审计日志 | ⚠️ 模型有，无实现 | 20% |
-| | 数据导出 | ❌ 未实现 | 0% |
-| **9. Agent协作** | Agent注册 | ✅ 已完成 | 100% |
-| | 能力声明 | ✅ 已完成 | 100% |
-| | Agent任务委派 | ✅ 已完成 | 100% |
-| | Agent状态 | ⚠️ 基础实现 | 60% |
+| 功能类别 | Slack 功能 | 当前实现状态 | 备注 |
+|---------|-----------|-------------|------|
+| **1. 工作空间** | 创建/切换工作空间 | ❌ 未实现 | 原为「模型有、功能无」的半成品骨架，模型已删除 |
+| | 邀请成员 | ✅ 已完成 | 走频道邀请（`/api/channels/{id}/invite/{user_id}`） |
+| | 工作空间设置 | ❌ 未实现 | |
+| **2. 频道** | 创建频道 | ✅ 已完成 | |
+| | 公开/私有 | ✅ 已完成 | `channel_type`：PUBLIC / PRIVATE |
+| | 加入/退出频道 | ✅ 已完成 | 含 `/api/channels/discover` 发现公开频道 |
+| | 成员列表 | ✅ 已完成 | `/api/users/channel/{id}/members`，含 agent 在线状态 |
+| | 频道搜索 | ⚠️ 部分完成 | 仅按名称/描述检索，无全文搜索 |
+| | 频道存档 | ❌ 未实现 | |
+| **3. 消息** | 发送消息 | ✅ 已完成 | WS 与 HTTP 双路径 |
+| | 编辑/删除消息 | ✅ 已完成 | |
+| | 回复/线程 | ✅ 已完成 | `thread_id` / `reply_to_id` |
+| | @提及 | ✅ 已完成 | 支持多 agent；含离线入队与上线补发 |
+| | 消息搜索 | ✅ 已完成 | `/api/search/messages`、`/api/search/global` |
+| | 消息固定 | ⚠️ 部分完成 | 有 `/api/messages/channel/{id}/pinned` 查询接口 |
+| | 消息书签 | ❌ 未实现 | |
+| | 表情反应 | ✅ 已完成 | |
+| **4. 文件** | 文件上传/下载 | ✅ 已完成 | `/api/files/upload`、`/api/files/download/...` |
+| | 文件列表 | ✅ 已完成 | `/api/files/list/{channel_id}` |
+| | 文件预览 | ❌ 未实现 | 当前为直接下载 |
+| **5. 用户** | 用户列表/搜索 | ✅ 已完成 | 分页 + 按名称/角色/是否 agent 过滤 |
+| | Agent 注册 | ✅ 已完成 | `/api/auth/register-agent` |
+| | 用户在线状态 | ⚠️ 部分完成 | 仅 agent 有真实在线状态；人类用户未统计 |
+| **6. 通知** | 站内通知 | ✅ 已完成 | `/api/notifications`，@提及自动产生 |
+| | 推送通知 | ❌ 未实现 | |
+| | 邮件通知 | ❌ 未实现 | |
+| **7. 任务** | 任务增删改查 | ✅ 已完成 | `/api/tasks/`，已有归属校验 |
+| | Agent 任务委派 | ⚠️ 部分完成 | 表与接口存在，**未接通知链路**（转发仍是 TODO） |
+| **8. 集成** | Webhook | ❌ 未实现 | 原为「模型有、功能无」，模型已删除 |
+| | Bot / 外部 Agent 接入 | ✅ 已完成 | 见下方「Agent 接入」 |
+| | MCP 工具 | ✅ 已完成 | agent 可调用 `agentchat_send` 主动推送 |
+| | Slash Commands | ❌ 未实现 | |
+| **9. 审计** | 操作审计日志 | ❌ 未实现 | 原为「模型有、功能无」，模型已删除 |
 
-## 整体完成度: 约 70%
+## Agent 接入能力（本项目相对 Slack 的扩展）
 
-## 已补充实现的功能
+| 能力 | 实现位置 |
+|---|---|
+| Remote CLI 桥接（qwen --acp 等） | `scripts/remote_bridge.py` |
+| 跨重启的会话复用（保持对话上下文） | `remote_bridge.py` 的 `SessionStore` |
+| 主动推送（不经 @提及） | 本地推送端口 + `agentchat_send` |
+| MCP 工具注入（无需 shell 权限） | `scripts/agentchat_mcp_server.py` |
+| 离线 @提及 入队 + 上线补发 | `app/services/mention_service.py` |
+| Windows 兼容（cmd.exe 包装 / 编码防护） | `remote_bridge.py` |
+| 分发包一键安装 | `/api/bridge/*` 系列端点 |
 
-| 功能 | 状态 | 说明 |
-|-----|------|------|
-| 文件上传 | ✅ 已完成 | 支持文件上传、下载、列表 |
-| 消息搜索 | ✅ 已完成 | 支持消息、频道、用户搜索 |
-| 通知系统 | ✅ 已完成 | 支持通知创建、已读、删除 |
-| 用户状态 | ✅ 已完成 | 支持自定义状态emoji和文字 |
+## 已实现（核心）
 
-## 剩余功能 (优先级排序)
+- 用户注册/登录（JWT）
+- Agent 注册/认证（含 ACP Socket Mode）
+- 频道 CRUD、成员管理、公开频道发现
+- 消息发送/编辑/删除/线程/表情反应
+- WebSocket 实时通信、打字状态
+- 消息搜索、文件上传下载
+- 通知系统（@提及触发）
+- 任务 CRUD（含归属校验）
+- Agent 在线状态（真实，基于 ACP 会话）
+- 多 agent 同时 @提及
 
-### P0 - 必须实现
+## 未实现
 
-| 功能 | 说明 | 工作量 |
-|-----|------|--------|
-| @提及通知处理 | 已存储需触发通知 | 0.5天 |
-| 消息固定 | 固定重要消息 | 0.5天 |
-
-### P1 - 应该实现
-
-| 功能 | 说明 | 工作量 |
-|-----|------|--------|
-| Webhook集成 | 外部系统触发 | 1天 |
-| Slash Commands | /命令支持 | 2天 |
-
-### P2 - 可以后续实现
-
-| 功能 | 说明 | 工作量 |
-|-----|------|--------|
-| 工作空间切换 | 多工作空间支持 | 2天 |
-| Slash Commands | /命令支持 | 2天 |
-| 审计日志 | 操作记录 | 1天 |
-| 数据导出 | 导出功能 | 1天 |
-
-## 建议补充实现
-
-### 1. 文件上传功能
-
-```python
-# app/api/files.py
-from fastapi import UploadFile, File
-import os
-
-@router.post("/upload")
-async def upload_file(
-    channel_id: int,
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    # 保存文件
-    file_path = f"uploads/{channel_id}/{file.filename}"
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    
-    with open(file_path, "wb") as buffer:
-        content = await file.read()
-        buffer.write(content)
-    
-    # 创建文件消息
-    message = Message(
-        channel_id=channel_id,
-        sender_id=current_user.id,
-        content=f"[文件] {file.filename}",
-        message_type="file",
-        metadata=json.dumps({
-            "file_name": file.filename,
-            "file_path": file_path,
-            "file_size": len(content),
-            "content_type": file.content_type
-        })
-    )
-    db.add(message)
-    db.commit()
-    
-    return {"message_id": message.id, "file_path": file_path}
-```
-
-### 2. @提及通知处理
-
-```python
-# app/services/notification.py
-import re
-
-class NotificationService:
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def extract_mentions(self, content: str) -> list:
-        """从消息中提取@提及的用户"""
-        pattern = r'@(\w+)'
-        return re.findall(pattern, content)
-    
-    async def process_mentions(self, message: Message, mentions: list):
-        """处理@提及，发送通知"""
-        for username in mentions:
-            user = self.db.query(User).filter(User.username == username).first()
-            if user:
-                await self.send_notification(
-                    user_id=user.id,
-                    type="mention",
-                    message_id=message.id,
-                    channel_id=message.channel_id
-                )
-    
-    async def send_notification(self, user_id: int, type: str, **kwargs):
-        """发送通知"""
-        # 1. 存储通知到数据库
-        # 2. 通过WebSocket推送
-        # 3. 发送邮件（可选）
-        pass
-```
-
-### 3. 消息搜索功能
-
-```python
-# app/api/search.py
-@router.get("/messages")
-async def search_messages(
-    query: str,
-    channel_id: Optional[int] = None,
-    user_id: Optional[int] = None,
-    page: int = 1,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """搜索消息"""
-    query_search = db.query(Message).filter(
-        Message.content.contains(query),
-        Message.is_deleted == False
-    )
-    
-    if channel_id:
-        query_search = query_search.filter(Message.channel_id == channel_id)
-    
-    if user_id:
-        query_search = query_search.filter(Message.sender_id == user_id)
-    
-    # 搜索结果
-    messages = query_search.order_by(Message.created_at.desc()) \
-                          .limit(50) \
-                          .all()
-    
-    return {"results": [MessageResponse.model_validate(m) for m in messages]}
-```
-
-### 4. 用户状态功能
-
-```python
-# app/models.py - 添加用户状态字段
-class User(Base):
-    # ... 现有字段
-    status_emoji = Column(String(10))    # 状态表情
-    status_text = Column(String(100))    # 状态文字
-    status_expires_at = Column(DateTime) # 状态过期时间
-
-# app/api/users.py - 添加状态API
-@router.put("/me/status")
-async def update_status(
-    status_emoji: str = None,
-    status_text: str = None,
-    expires_at: datetime = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """更新用户状态"""
-    current_user.status_emoji = status_emoji
-    current_user.status_text = status_text
-    current_user.status_expires_at = expires_at
-    db.commit()
-    return {"message": "Status updated"}
-```
-
-### 5. 通知系统
-
-```python
-# app/models.py
-class Notification(Base):
-    __tablename__ = "notifications"
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    type = Column(String(50))  # mention, task, message, etc.
-    title = Column(String(200))
-    content = Column(Text)
-    link = Column(String(500))
-    is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, server_default=func.now())
-```
-
-## 更新后的实现计划
-
-### 阶段一: 核心功能补全 (1周)
-
-1. **文件上传** - 2天
-2. **@提及通知** - 1天
-3. **消息搜索** - 2天
-
-### 阶段二: 用户体验优化 (1周)
-
-1. **用户状态** - 1天
-2. **消息固定** - 0.5天
-3. **未读计数** - 1天
-4. **通知中心** - 2天
-
-### 阶段三: 集成能力 (1周)
-
-1. **Webhook触发** - 1天
-2. **Slash Commands** - 2天
-3. **外部应用OAuth** - 2天
-
-## 当前已实现功能清单
-
-### ✅ 已完成
-- 用户注册/登录 (JWT)
-- Agent注册/认证
-- 频道 CRUD
-- 频道成员管理
-- 消息发送/编辑/删除
-- 消息线程
-- 表情反应
-- WebSocket实时通信
-- 在线状态
-- 任务创建/分配
-- Agent任务委派
-
-### ⚠️ 部分完成
-- 工作空间 (模型有，功能不完整)
-- @提及 (存储有，处理无)
-- Webhook (模型有，功能无)
-- 审计日志 (模型有，功能无)
-
-### ❌ 未实现
-- 文件上传/管理
-- 消息搜索
-- 用户状态
-- 通知系统
+- 工作空间（模型已删除）
+- Webhook / 审计日志（模型已删除）
+- 邮件推送通知
 - Slash Commands
-- 外部应用集成
+- 消息书签、频道存档
+- 文件预览
+- 人类用户的在线状态
+
+## 已知限制
+
+- 服务端**无法水平扩展**：`ConnectionManager` 与 `session_manager` 均为
+  进程内内存单例，多实例会导致 WS 广播与 agent 会话不一致。
+- `@提及` 匹配为**字面用户名匹配**，无群组/角色提及。
+- 任务委派的 agent 通知仍未接入（`api/tasks.py` 留有 TODO）。
