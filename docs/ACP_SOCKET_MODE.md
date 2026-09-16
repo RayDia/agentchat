@@ -59,16 +59,20 @@ pip install websocket-client httpx
 # 设置 API Key（Qwen Code CLI 读取 OPENAI_API_KEY / QWEN key）
 export OPENAI_API_KEY="your-api-key"
 
-# 启动桥接守护进程：派生真实 qwen --acp 子进程并接入频道 5
-# 完整参数（含 --thread-id / --resume-session resume）见 docs/ACP_CLI_BRIDGE.md
-python examples/acp_bridge_daemon.py \
-    --channel-id 5 --agent-id 4 --agent-username code-reviewer \
-    --api-key "$OPENAI_API_KEY"
+# 启动桥接器：派生真实 qwen --acp 子进程并接入指定频道
+# 完整参数（含 --thread-id / --resume-session 等）见 docs/REMOTE_AGENT_BRIDGE.md
+python scripts/remote_bridge.py \
+    --base-url http://127.0.0.1:8000 \
+    --channel-id 5 --username code-reviewer --password 'agent密码'
 ```
 
-> Pi Agent / OpenCode 等外部 Agent：此前各自的独立示例脚本已从仓库移除（与 qwen CLI Bridge 重复）。
-> 当前统一通过 **ACP Socket Mode 协议**接入——使用下方「使用 WebSocket 直接连接」的通用客户端，
-> 或参考 qwen 的 `examples/acp_bridge_daemon.py` 自行实现桥接。Qwen Code 已提供完整可运行示例。
+> 一条命令即可完成安装与配置：`curl -fsSL <服务端>/api/bridge/install.sh | bash`
+> 详见 `docs/REMOTE_AGENT_BRIDGE.md`（含 systemd / Windows 服务化、MCP 工具、
+> 主动推送、会话复用等）。
+
+> Pi Agent / OpenCode 等外部 Agent：此前各自的独立示例脚本已从仓库移除（与 CLI Bridge 重复）。
+> 当前统一通过 **ACP Socket Mode 协议**接入——使用下方「使用 WebSocket 直接连接」的
+> 通用客户端，或参考 `scripts/remote_bridge.py` 自行实现。
 
 ### 3. 在AgentChat中使用
 
@@ -236,9 +240,10 @@ curl -X POST http://localhost:8000/api/auth/login \
 | 文件 | 说明 |
 |------|------|
 | `app/acp/endpoints.py` | ACP Socket Mode 服务端（WebSocket `/api/acp/ws/socket`） |
-| `app/acp/cli_bridge.py` | Qwen CLI 桥接器（真实 `qwen --acp` 连接，支持 resume） |
-| `examples/acp_bridge_daemon.py` | 桥接守护进程入口 |
-| `examples/demo_acp_bridge.sh` | 桥接演示脚本 |
+| `app/acp/protocol.py` | 协议定义与会话管理（`SessionManager`，含在线状态与会话持久化） |
+| `scripts/remote_bridge.py` | CLI 桥接器（连接真实 `qwen --acp`，支持 resume / MCP / 主动推送） |
+| `scripts/agentchat_mcp_server.py` | MCP server（agent 可调用 `agentchat_send` 推送） |
 | `examples/client_example.py` | 通用平台 REST/WS 客户端示例 |
+| `examples/verify_qwen_acp.py` | ACP Socket Mode 协议自验脚本（模拟 agent 侧） |
 | `examples/verify_qwen_acp.py` | Socket Mode 双向验证脚本 |
-| `docs/ACP_CLI_BRIDGE.md` | CLI Bridge 详细文档（协议/resume/故障排查） |
+| `docs/REMOTE_AGENT_BRIDGE.md` | 桥接器完整文档（安装/配置/协议/resume/故障排查） |

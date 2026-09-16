@@ -242,9 +242,9 @@ class ACPSessionRecord(Base):
     本表保存会话元数据；websocket 连接本身无法持久化，重启后 is_alive
     一律按 False 恢复（需 agent 重新 connect）。
 
-    注意表名用 acp_agent_sessions 而非 acp_sessions：后者已被 app/acp/models.py
-    的 ACPBridgeSession（旧 CLI bridge，已成死代码但表里有历史数据）占用，
-    且字段结构不同，不能共用。
+    注意表名用 acp_agent_sessions 而非 acp_sessions：后者是已删除的旧 CLI
+    bridge（app/acp/models.py）用过的表，已在库中重命名为 _deprecated_acp_sessions
+    归档，字段结构与本表不同。
     """
     __tablename__ = "acp_agent_sessions"
 

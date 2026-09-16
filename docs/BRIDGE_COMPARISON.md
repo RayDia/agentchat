@@ -1,5 +1,9 @@
 # 两套 CLI 桥接方案对比（实测）
 
+> **状态：已完成合并。** 旧方案已被删除，其唯一有价值的「会话复用」能力已
+> 移植到 `scripts/remote_bridge.py`（见文末「五、后续处理结果」）。
+> 本文档保留为决策记录。
+
 ## 背景
 
 仓库里存在**两套**把本地 CLI（qwen --acp）接入 AgentChat 的实现：
@@ -126,3 +130,59 @@ WARNING ACPBridge: get_session_by_thread 失败:
 | 新方案上下文丢失 | 起真实 qwen 桥接器 → 建立临时值 → 杀进程重启 → 询问，实测答不出 |
 | 旧方案存储失效 | 实际实例化 `QwenACPBridge`，捕获 `Table doesn't exist` 报错 |
 | agent 自身持久化干扰 | 检查 `~/.qwen/memories/` 目录内容 |
+
+---
+
+## 五、后续处理结果
+
+### 5.1 会话复用已移植到新方案（提交 4c49b2c）
+
+新增 `SessionStore`（thread_id → CLI session_id 的本地 JSON 持久化），
+`_qwen_ensure_session` 会优先 resume 已有会话，失败则回退新建。
+
+验证（真实 qwen 0.23.3，5/5 通过）：首轮新建并落盘映射 → 重启后
+sessionId 与首轮相同 → agent 答出跨重启的临时值。
+
+> **两个由实测得出、写在实现里的要点**：
+> 1. 只在会话**实际发生过 prompt 之后**才记录映射。qwen 的会话文件要等到
+>    首次 prompt 才落盘；只 `session/new` 不对话的会话没有持久化记录，
+>    下次 resume 必然报 `Resource not found`，白白多一次失败的往返。
+> 2. 会话映射存在**桥接器本地**，不放服务端表 —— 服务端记录的是「agent
+>    连上了哪个频道」，而这里需要的是「本机该 thread 对应 CLI 的哪个会话」，
+>    属客户端状态；且分发包场景下桥接器未必有数据库访问权。
+
+> **实验设计警告**：验证「上下文是否保持」**不能用「让 agent 记一个暗号」
+> 的方式**——qwen 会把信息写进自己的 `~/.qwen/memories/`，答对并不能证明
+> 会话被保持。必须用**纯临时信息**并明确要求不落盘。此前据此得出过一次
+> 错误结论。
+
+### 5.2 旧方案已删除
+
+| 已删除 | 说明 |
+|---|---|
+| `app/acp/cli_bridge.py` | 655 行，已被 `scripts/remote_bridge.py` 完全取代 |
+| `app/acp/models.py` | 其两张表已归档并 DROP |
+| `examples/acp_bridge_daemon.py` | 旧守护进程入口 |
+| `examples/test_real_qwen_bridge.py` | 旧端到端测试 |
+| `examples/demo_acp_bridge.sh` | 旧演示脚本 |
+| `examples/demo_resume.py` | 旧 resume 演示（新方案已内建该能力） |
+| `docs/ACP_CLI_BRIDGE.md` | 旧方案文档 |
+
+**保留**：
+- `examples/client_example.py`、`examples/verify_qwen_acp.py`
+  —— 与旧方案无关的独立示例，不依赖已删模块。
+- `docs/ACP_SOCKET_MODE.md` —— 协议文档仍然有效，其中指向旧文件的链接已更新。
+
+**数据库**：`_deprecated_acp_sessions` / `_deprecated_acp_messages` /
+`_deprecated_webhooks` / `_deprecated_workspaces` / `_deprecated_activity_logs`
+已 DROP。变更前的全量快照保留在 `backups/legacy_tables_20260916_170612.json`。
+
+### 5.3 最终结构
+
+| 能力 | 位置 |
+|---|---|
+| CLI 桥接（含会话复用、MCP、主动推送、Windows 兼容） | `scripts/remote_bridge.py` |
+| MCP server（`agentchat_send` 工具） | `scripts/agentchat_mcp_server.py` |
+| 命令行推送工具 | `scripts/agentchat_send.sh`（Windows 为 `.ps1`） |
+| ACP Socket Mode 服务端 | `app/acp/endpoints.py` + `app/acp/protocol.py` |
+| 桥接器文档 | `docs/REMOTE_AGENT_BRIDGE.md` |

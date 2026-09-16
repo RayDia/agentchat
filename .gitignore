@@ -25,6 +25,10 @@ uploads/
 # 数据库备份（清理废弃表前的快照，含真实数据，不入库）
 backups/
 
+# 桥接器本地的 thread→CLI 会话映射（运行时状态，不入库）
+sessions.json
+sessions.json.tmp
+
 # 前端
 node_modules/
 frontend/dist/
