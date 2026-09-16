@@ -464,7 +464,7 @@ curl -X POST http://127.0.0.1:8765/push -d '构建完成，共修改 3 个文件
 
 配置文件 / 环境变量同样支持：`push-port = 9000` / `AGENTCHAT_PUSH_PORT=9000`。
 
-### 5.2 直接走协议（自行实现客户端时用）
+### 5.5 直接走协议（自行实现客户端时用）
 
 不想依赖桥接器的话，可以直接用 ACP socket mode：
 
@@ -580,6 +580,134 @@ http://127.0.0.1:8765/push -d '...'`」→ qwen 申请权限 → 桥接器批准
   请确认用户对主机有管控
 - MCP 注入依赖 `--mcp-config` 与 `-y` 两个 CLI 参数；换用其他 CLI
   （非 qwen）时需按其 MCP 配置方式调整，或在配置里用 `--no-mcp` 关闭
+
+## 六、配置速查
+
+### 6.1 安装后目录结构
+
+一键安装完成后，`~/.agentchat/bridge/`（Windows：`%USERPROFILE%\.agentchat\bridge\`）
+下应有以下文件：
+
+| 文件 | 作用 |
+|---|---|
+| `remote_bridge.py` | 桥接器本体（对接 CLI 与 AgentChat） |
+| `agentchat_mcp_server.py` | MCP server，供 agent 调用 `agentchat_send` |
+| `agentchat-send` | 命令行推送工具（Windows：`agentchat-send.ps1`） |
+| `bridge.toml` | 配置文件（权限 600） |
+| `start.sh` / `start.bat` | 启动包装脚本 |
+| `.venv/` | 独立虚拟环境（仅 httpx、websockets） |
+
+### 6.2 配置项一览
+
+三种来源，**优先级：命令行 > 环境变量 > 配置文件**。
+
+| 配置项 | 配置文件键 | 环境变量 | 默认值 |
+|---|---|---|---|
+| 服务端地址 | `base-url` | `AGENTCHAT_BASE_URL` | 无（必填） |
+| 频道 ID | `channel-id` | `AGENTCHAT_CHANNEL_ID` | 无（必填） |
+| agent 账号 | `username` | `AGENTCHAT_USERNAME` | 无（必填） |
+| agent 密码 | `password` | `AGENT_PASSWORD` | 无（必填） |
+| 本地推送端口 | `push-port` | `AGENTCHAT_PUSH_PORT` | `8765`（`0` 禁用） |
+| 工具审批策略 | `permission-mode` | `AGENTCHAT_PERMISSION_MODE` | `none` |
+| 命令白名单 | `permission-allowlist` | `AGENTCHAT_PERMISSION_ALLOWLIST` | 空 |
+| MCP 注入 | 无 | 无 | 开启（`--no-mcp` 关闭） |
+
+命令行独有的：`--config`、`--thread-id`、`--resume-session`、`--cli-cmd`、
+`--api-key`、`--model`、`--check`、`--mcp` / `--no-mcp`。
+
+### 6.3 MCP 是如何被接上的
+
+**不需要手工配置。** 桥接器启动时自动完成三件事：
+
+1. 在本机起推送服务（默认 `127.0.0.1:8765`）
+2. 生成一份临时 MCP 配置，内容形如：
+
+```json
+{
+  "mcpServers": {
+    "agentchat": {
+      "command": "<venv>/bin/python",
+      "args": ["<安装目录>/agentchat_mcp_server.py"],
+      "env": {"AGENTCHAT_PUSH_URL": "http://127.0.0.1:8765/push"}
+    }
+  }
+}
+```
+
+3. 用 `qwen --mcp-config <该文件> -y` 启动 CLI，并向其注入
+   `AGENTCHAT_PUSH_URL` 环境变量
+
+启动日志里能看到确认信息：
+
+```
+INFO: 本地推送服务已就绪: http://127.0.0.1:8765/push
+INFO: 已注入 MCP 配置: /tmp/agentchat-mcp-xxxx.json（已自动信任）
+INFO: 启动 CLI 子进程: .../qwen --acp ... --mcp-config /tmp/...json -y
+```
+
+验证 MCP 是否真的生效：
+
+```bash
+# 1) MCP server 应被 CLI 作为子进程拉起
+pgrep -af agentchat_mcp_server.py
+
+# 2) 推送端口应可访问
+curl http://127.0.0.1:8765/push
+
+# 3) 在频道里操作 agent 调用工具，例如：
+#    @your-agent 请用 agentchat_send 工具发送：连通性测试
+```
+
+### 6.4 只想用 MCP，不想被 @提及
+
+MCP 工具是**额外能力**，不改变原有点对点行为：
+
+- agent 仍照常接收 @提及 并回复
+- 同时多出 `agentchat_send` / `agentchat_status` 两个工具，可主动推送
+
+想彻底关掉主动推送能力（回到纯问答）：`./start.sh --no-mcp --push-port 0`
+
+### 6.5 端口冲突怎么办
+
+推送端口被占用时，桥接器会**自动向后顺延**（最多 10 个），并在日志中提示：
+
+```
+WARNING: 推送端口 8765 已被占用（[Errno 98] Address already in use），尝试顺延…
+WARNING: 推送服务改用端口 8766（原 8765 被占用）
+INFO: 本地推送服务已就绪: http://127.0.0.1:8766/push
+```
+
+新增的端口会同步写进 MCP 配置与 `AGENTCHAT_PUSH_URL`，agent 侧无需改动。
+**但若有外部脚本硬编码了 `http://127.0.0.1:8765/push`，需自行同步。**
+想固定端口：`./start.sh --push-port 9000`。
+
+### 6.6 手工把 MCP 配到 qwen（不依赖桥接器注入）
+
+适用于想让 qwen 在**非桥接场景**下也能推送，或使用 `--no-mcp` 时。
+
+```bash
+qwen mcp add agentchat /path/to/venv/bin/python \
+    /home/USER/.agentchat/bridge/agentchat_mcp_server.py
+qwen mcp list          # 确认已登记
+qwen mcp approve agentchat   # 新 server 处于 pending，需批准才激活
+```
+
+或写入 `~/.qwen/settings.json`：
+
+```json
+{
+  "mcpServers": {
+    "agentchat": {
+      "command": "/home/USER/.agentchat/bridge/.venv/bin/python",
+      "args": ["/home/USER/.agentchat/bridge/agentchat_mcp_server.py"],
+      "env": {"AGENTCHAT_PUSH_URL": "http://127.0.0.1:8765/push"}
+    }
+  }
+}
+```
+
+> 别忘了 `approve`。未批准的 MCP server 工具不会激活，agent 只能把它当普通
+> 程序手动调用（那样反而要走 shell 审批）。
 
 ## 参数说明
 

@@ -209,16 +209,36 @@ def start_push_server(bridge):
         def log_message(self, fmt, *args):
             logger.debug("[push-server] " + fmt % args)
 
-    try:
-        srv = ThreadingHTTPServer(("127.0.0.1", int(bridge.push_port)), Handler)
-    except OSError as e:
-        logger.warning("本地推送服务启动失败（端口 %s 可能被占用）: %s",
-                       bridge.push_port, e)
-        return
+    # 端口可能被同机的其他服务占用（实测 8765 常被开发项目占用）。
+    # 若直接放弃，MCP 工具与 agentchat-send 仍指向该端口 → 调用全部失败，
+    # 且只在启动日志里留一行 warning，极难排查。故改为向后顺延重试。
+    srv, actual_port = None, None
+    want = int(bridge.push_port)
+    for candidate in range(want, want + 10):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+            actual_port = candidate
+            break
+        except OSError as e:
+            if candidate == want:
+                logger.warning("推送端口 %s 已被占用（%s），尝试顺延…", want, e)
+            continue
+
+    if srv is None:
+        logger.error("推送服务启动失败：%s~%s 全部被占用，"
+                     "agent 将无法主动推送（可用 --push-port 指定其他端口）",
+                     want, want + 9)
+        return None
+
+    if actual_port != want:
+        logger.warning("推送服务改用端口 %s（原 %s 被占用）。"
+                       "若有外部脚本硬编码了旧端口，请同步更新",
+                       actual_port, want)
+    bridge.push_port = actual_port
+
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     logger.info("本地推送服务已就绪: http://127.0.0.1:%s/push"
-                "（agent session 内用 $AGENTCHAT_PUSH_URL 调用）",
-                bridge.push_port)
+                "（agent session 内用 $AGENTCHAT_PUSH_URL 调用）", actual_port)
     return srv
 
 
@@ -631,6 +651,15 @@ class RemoteBridge:
             env["OPENAI_API_KEY"] = self.api_key
         if self.model:
             env["QWEN_MODEL"] = self.model
+
+        # 先启动本地推送服务。必须早于 MCP 配置生成与环境变量注入：
+        # 该服务在端口被占用时会顺延到新端口，若先注入就会把错误的
+        # 端口写进 MCP 配置和 AGENTCHAT_PUSH_URL，导致推送全部失败。
+        if self.push_port:
+            self._push_server = start_push_server(self)
+            if not self._push_server:
+                self.push_port = 0      # 启动失败，后续不再注入相关配置
+
         # 让 qwen session 内部能直接推送到频道
         if self.push_port:
             env["AGENTCHAT_PUSH_URL"] = f"http://127.0.0.1:{self.push_port}/push"
@@ -704,7 +733,6 @@ class RemoteBridge:
         logger.info("已连接 AgentChat(%s, channel=%s) 与 qwen(session=%s)",
                     self.base_url, self.channel_id, self.qwen_session_id)
 
-        self._push_server = start_push_server(self)
         await self._loop()
 
     async def stop(self):
