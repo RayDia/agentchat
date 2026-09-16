@@ -21,8 +21,21 @@ async def get_channel_members(
     db: Session = Depends(get_db)
 ):
     """Get members of a channel (excluding current user)"""
-    from ..models import ChannelMember
-    
+    from ..models import ChannelMember, Channel
+
+    # 必须校验调用者身份：此前只校验「已登录」，导致任意用户可枚举
+    # 任意频道（含私有频道）的成员名单。
+    me = db.query(ChannelMember).filter(
+        ChannelMember.channel_id == channel_id,
+        ChannelMember.user_id == current_user.id
+    ).first()
+    if not me:
+        channel = db.query(Channel).filter(Channel.id == channel_id).first()
+        is_public = channel and (channel.channel_type or "").lower() == "public"
+        if not is_public:
+            raise HTTPException(status_code=403,
+                                detail="Not a member of this channel")
+
     # Get channel members
     members = db.query(ChannelMember).filter(
         ChannelMember.channel_id == channel_id

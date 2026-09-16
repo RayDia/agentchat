@@ -21,12 +21,10 @@ const AppContent = () => {
 
   useEffect(() => {
     const saved = localStorage.getItem('currentChannel');
-    console.log('[App] 检查localStorage, currentChannel:', saved);
     if (saved && saved !== 'null') {
       try {
         const channel = JSON.parse(saved);
         setCurrentChannel(channel);
-        console.log('[App] 从localStorage恢复频道:', channel?.id, channel?.name);
       } catch (e) {
         console.error('[App] 解析频道数据失败:', e);
         localStorage.removeItem('currentChannel');

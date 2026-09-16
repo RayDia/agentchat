@@ -24,7 +24,6 @@ export const WebSocketProvider = ({ children }) => {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
         setConnected(true);
       };
 
@@ -53,7 +52,6 @@ export const WebSocketProvider = ({ children }) => {
           return;
         }
 
-        console.log('WebSocket closed, reconnecting...');
         reconnectTimeout.current = setTimeout(connectWebSocket, 3000);
       };
     };
@@ -71,7 +69,6 @@ export const WebSocketProvider = ({ children }) => {
   }, [user?.id]);
 
   const handleWsMessage = (data) => {
-    console.log('[WS] 收到消息:', data);
     switch (data.type) {
       case 'new_message':
         // 旧格式兼容
@@ -83,15 +80,12 @@ export const WebSocketProvider = ({ children }) => {
       case 'message':
         // 新格式：直接包含消息数据
         if (data.data && data.data.channel_id) {
-          console.log('[WS] 处理频道', data.data.channel_id, '的消息:', data.data.id);
           setMessages(prev => {
             const channelMessages = prev[data.data.channel_id] || [];
             // 检查是否已存在
             const exists = channelMessages.some(m => m.id === data.data.id);
-            console.log('[WS] 消息已存在:', exists, '当前消息列表长度:', channelMessages.length);
             if (exists) return prev;
             const newMessages = [...channelMessages, data.data];
-            console.log('[WS] 新消息列表长度:', newMessages.length);
             return {
               ...prev,
               [data.data.channel_id]: newMessages
@@ -106,7 +100,6 @@ export const WebSocketProvider = ({ children }) => {
         // Ignore presence messages
         break;
       default:
-        console.log('Unknown WS message type:', data.type);
     }
   };
 

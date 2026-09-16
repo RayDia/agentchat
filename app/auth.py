@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 import hashlib
+import hmac
 import secrets
 from .config import settings
 from .database import get_db
@@ -16,17 +17,23 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against a hash"""
-    # 支持两种格式: new: salt:hash 和 old: salt:hash
-    if hashed_password.startswith("new:"):
-        _, salt, stored_hash = hashed_password.split(":", 2)
-        computed_hash = hashlib.pbkdf2_hmac('sha256', plain_password.encode(), salt.encode(), 100000)
-        return computed_hash.hex() == stored_hash
-    elif hashed_password.startswith("old:"):
-        _, salt, stored_hash = hashed_password.split(":", 2)
-        computed_hash = hashlib.pbkdf2_hmac('sha256', plain_password.encode(), salt.encode(), 100000)
-        return computed_hash.hex() == stored_hash
-    return False
+    """Verify a password against a hash.
+
+    格式为 `<版本>:<salt>:<hash>`。当前 new/old 两个版本使用同一算法
+    （PBKDF2-HMAC-SHA256，10 万轮），此处合并处理以免出现两份完全相同的
+    代码；若将来引入算法升级，应在此按版本分派。
+
+    比较使用 hmac.compare_digest 而非 ==，避免通过响应时间侧信道推断哈希。
+    """
+    if not hashed_password or ":" not in hashed_password:
+        return False
+    try:
+        _version, salt, stored_hash = hashed_password.split(":", 2)
+    except ValueError:
+        return False
+    computed_hash = hashlib.pbkdf2_hmac(
+        'sha256', plain_password.encode(), salt.encode(), 100000).hex()
+    return hmac.compare_digest(computed_hash, stored_hash)
 
 
 def get_password_hash(password: str) -> str:

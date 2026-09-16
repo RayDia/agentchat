@@ -19,6 +19,9 @@ venv/
 # 服务日志与运行目录（见 scripts/start_server.sh）
 logs/
 
+# 用户上传的文件（运行时数据，不入库）
+uploads/
+
 # 前端
 node_modules/
 frontend/dist/

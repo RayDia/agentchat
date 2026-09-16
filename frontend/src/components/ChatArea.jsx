@@ -27,9 +27,7 @@ const ChatArea = ({
   const inputRef = useRef(null);
 
   useEffect(() => {
-    console.log('[ChatArea] useEffect触发, channel:', channel?.id, 'connected:', connected);
     if (channel?.id) {
-      console.log('[ChatArea] 调用loadMessages');
       loadMessages();
       if (connected) {
         joinChannel(channel.id);
@@ -49,7 +47,6 @@ const ChatArea = ({
     const handleScroll = () => {
       // 当滚动到顶部附近时加载更多
       if (container.scrollTop < 50 && hasMore && !loadingMore) {
-        console.log('[ChatArea] 滚动到顶部，加载更多消息');
         loadMoreMessages();
       }
     };
@@ -60,10 +57,7 @@ const ChatArea = ({
 
   // 同步WebSocket消息
   useEffect(() => {
-    console.log('[ChatArea] messages状态变化:', messages);
-    console.log('[ChatArea] 当前频道:', channel?.id);
     if (channel?.id && messages[channel.id]) {
-      console.log('[ChatArea] 处理频道', channel.id, '的WebSocket消息');
       setMessagesList(prev => {
         const wsMessages = messages[channel.id] || [];
         // 合并历史消息和WebSocket消息，去重
@@ -72,7 +66,6 @@ const ChatArea = ({
         // 移除本地临时消息（通过时间匹配）
         const recentLocalId = prev.find(m => m.is_local)?.id;
         const updatedList = prev.filter(m => !m.is_local);
-        console.log('[ChatArea] 历史消息数量:', updatedList.length, '新消息数量:', newMessages.length);
         // 按时间排序
         return [...updatedList, ...newMessages].sort((a, b) => {
           return new Date(a.created_at) - new Date(b.created_at);
@@ -82,9 +75,7 @@ const ChatArea = ({
   }, [messages, channel?.id]);
 
   const loadMessages = async (reset = true) => {
-    console.log('[ChatArea] loadMessages 被调用, channel:', channel?.id, 'reset:', reset);
     if (!channel?.id) {
-      console.log('[ChatArea] channel.id 不存在，跳过加载');
       return;
     }
     try {
@@ -97,7 +88,6 @@ const ChatArea = ({
       }
       
       const data = await api.getMessages(channel.id, { page_size: 50, ...(oldestId && !reset ? { before: oldestId } : {}) });
-      console.log('[ChatArea] API返回数据:', { total: data.total, items_count: data.items?.length });
       
       // 确保消息按时间升序排列（从旧到新）
       const newMessages = (data.items || []).sort((a, b) => {
@@ -108,12 +98,10 @@ const ChatArea = ({
         setMessagesList(newMessages);
         setOldestId(newMessages.length > 0 ? newMessages[0].id : null);
         setHasMore(data.total > 50); // 如果总数大于50，还有更多
-        console.log('[ChatArea] 重置消息列表，数量:', newMessages.length, 'hasMore:', data.total > 50);
       } else {
         setMessagesList(prev => [...newMessages, ...prev]);
         setOldestId(newMessages.length > 0 ? newMessages[0].id : oldestId);
         setHasMore((data.total || 0) > (messagesList.length + newMessages.length));
-        console.log('[ChatArea] 加载更多消息，数量:', newMessages.length, '总计:', messagesList.length + newMessages.length);
       }
     } catch (err) {
       console.error('Failed to load messages:', err);

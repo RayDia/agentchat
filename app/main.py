@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
+import sys
 
 from .config import settings
 from .database import init_db
@@ -36,13 +37,24 @@ app = FastAPI(
 )
 
 # CORS middleware
+# allow_origins=["*"] 与 allow_credentials=True 是互斥组合：浏览器会直接拒绝
+# 带凭据的跨域请求（既不安全也不生效）。改为按需配置白名单。
+_origins = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
+if not _origins:
+    _origins = ["*"]
+_allow_credentials = _origins != ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if _origins == ["*"]:
+    print("[WARN] CORS 允许任意来源且未启用凭据；生产环境请在 .env 设置 "
+          "CORS_ORIGINS=https://your-domain", file=sys.stderr)
 
 # Include API routers
 app.include_router(auth.router, prefix="/api")

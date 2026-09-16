@@ -86,7 +86,11 @@ async def get_task(
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
+    # 归属校验：此前只查 id，任意登录用户可越权读取他人任务
+    if task.creator_id != current_user.id and task.assignee_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     return TaskResponse.model_validate(task)
 
 
@@ -101,7 +105,11 @@ async def update_task(
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
+    # 归属校验：此前完全没有校验，任意登录用户可改写他人任务
+    if task.creator_id != current_user.id and task.assignee_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     # Update fields
     if task_update.title is not None:
         task.title = task_update.title

@@ -68,12 +68,15 @@ async def upload_file(
         "stored_filename": stored_filename
     }
     
+    # 注意：必须用 extra_data。Message 没有 metadata 列，而 SQLAlchemy 的
+    # Base 自带同名保留属性，传 metadata= 不会报错、会被静默当作普通 Python
+    # 属性丢弃，导致文件元数据（文件名/大小/hash）全部丢失。
     message = Message(
         channel_id=channel_id,
         sender_id=current_user.id,
         content=content or f"[文件] {file.filename}",
         message_type="file",
-        metadata=json.dumps(metadata)
+        extra_data=json.dumps(metadata, ensure_ascii=False)
     )
     db.add(message)
     db.commit()
