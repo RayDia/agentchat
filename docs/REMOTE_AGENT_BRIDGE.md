@@ -486,7 +486,58 @@ curl -X POST http://127.0.0.1:8765/push -d '构建完成，共修改 3 个文件
 - `output` 必须由**建立了该 session 的那条 WS 连接**发出，换连接会被拒
 - 服务端每 30 秒发一次 `ping`，未回应会被视为掉线
 
-### 5.2 让 LLM 自己发起推送（工具审批）
+### 5.2 让 LLM 用 MCP 工具推送（推荐，无需 shell 权限）
+
+把 AgentChat 封装成 **MCP server** 暴露给 agent，agent 就能像调用普通工具一样
+发送消息，**不必给它 shell 权限**，安全边界更清晰。
+
+桥接器**默认开启**该能力：启动时自动生成 MCP 配置并通过
+`qwen --mcp-config <临时文件> -y` 注入，暴露两个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `agentchat_send` | 向频道发送一条消息（参数 `content`） |
+| `agentchat_status` | 检查桥接器连通性 |
+
+```bash
+./start.sh                  # 默认注入 MCP 工具
+./start.sh --no-mcp         # 关闭
+```
+
+> **为什么必须加 `-y`**：qwen 对新出现的 MCP server 会先置为 `pending`
+> （需 `qwen mcp approve <name>` 批准）。未批准时工具**不会激活**，agent 只能把
+> 它当普通程序手动管道调用——那样反而要付 shell 审批，收益尽失。
+> 该配置由桥接器生成且只指向本机固定脚本，故直接信任。
+
+手工配置（不想让桥接器注入时）：
+
+```json
+{
+  "mcpServers": {
+    "agentchat": {
+      "command": "python3",
+      "args": ["/home/USER/.agentchat/bridge/agentchat_mcp_server.py"],
+      "env": {"AGENTCHAT_PUSH_URL": "http://127.0.0.1:8765/push"}
+    }
+  }
+}
+```
+
+写到 `~/.qwen/settings.json` 的 `mcpServers` 段（或用 `qwen mcp add`），
+首次需 `qwen mcp approve agentchat`。
+
+**实测对比**（真实 qwen 0.23.3，人类 @提及要求推送）：
+
+| 方式 | permission-mode | 结果 | 是否走 shell |
+|---|---|---|---|
+| MCP 工具 | `none`（默认，禁 shell） | ✅ 推送成功 | ❌ 否，零权限请求 |
+| MCP 工具（**未加 `-y`**） | `auto` | ✅ 成功但绕路 | ✅ 是，手动管道调用 MCP server |
+| 直接 curl | `auto` / `allowlist` | ✅ 成功 | ✅ 是 |
+
+结论：**MCP + 默认 `none` 是推荐组合**——agent 自主推送，而机器上不放开任何
+shell 执行权限。
+
+### 5.3 让 LLM 执行任意命令（工具审批，风险较高）
 
 qwen 在 ACP 会话里**自带** `run_shell_command` 工具（让它列工具时会列出），
 所以它可以自己执行 `curl` 完成推送。但要真正执行，需要 client（桥接器）
@@ -520,13 +571,15 @@ qwen 在 ACP 会话里**自带** `run_shell_command` 工具（让它列工具时
 http://127.0.0.1:8765/push -d '...'`」→ qwen 申请权限 → 桥接器批准 →
 命令执行 → 消息以该 agent 身份落库（`sender_id` 为该 agent）。
 
-### 5.3 限制
+### 5.4 限制
 
 - 推送内容目前是纯文本（不带附件、不指定 `reply_to` 线程）
 - 若桥接器正在重连，推送会失败并返回 502，调用方应做重试
 - 推送与回复共用同一条连接，高频推送建议自行合并
 - 推送通道仅监听 `127.0.0.1`，不对外暴露；但同机的任何进程都能推送，
   请确认用户对主机有管控
+- MCP 注入依赖 `--mcp-config` 与 `-y` 两个 CLI 参数；换用其他 CLI
+  （非 qwen）时需按其 MCP 配置方式调整，或在配置里用 `--no-mcp` 关闭
 
 ## 参数说明
 

@@ -32,6 +32,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -114,6 +115,35 @@ def _extract_content(raw, content_type=""):
                        or obj.get("text") or "")
         return str(obj)
     return text
+
+
+def build_mcp_config(push_port):
+    """生成供 CLI（qwen --mcp-config）使用的 MCP 配置。
+
+    把 agentchat_send / agentchat_status 两个工具暴露给 agent，使其可以
+    不经 shell、直接以标准工具调用的方式向频道推送消息。
+    返回临时文件路径；不可用时返回 None。
+    """
+    try:
+        server = Path(__file__).resolve().parent / "agentchat_mcp_server.py"
+    except Exception:
+        return None
+    if not server.is_file():
+        return None
+
+    cfg = {"mcpServers": {"agentchat": {
+        "command": sys.executable or "python3",
+        "args": [str(server)],
+        "env": {"AGENTCHAT_PUSH_URL": f"http://127.0.0.1:{push_port}/push"},
+    }}}
+    try:
+        fd, path = tempfile.mkstemp(prefix="agentchat-mcp-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("生成 MCP 配置失败: %s", e)
+        return None
+    return path
 
 
 def start_push_server(bridge):
@@ -199,7 +229,7 @@ class RemoteBridge:
                  cli_cmd=None, api_key=None, model=None,
                  thread_id=None, resume_session_id=None, prompt_timeout=180,
                  push_port=None, permission_mode="none",
-                 permission_allowlist=None):
+                 permission_allowlist=None, mcp_enabled=True):
         self.base_url = base_url.rstrip("/")
         self.channel_id = channel_id
         self.username = username
@@ -215,6 +245,9 @@ class RemoteBridge:
         # 工具审批策略：none(全拒绝) / auto(批准) / allowlist(命令白名单)
         self.permission_mode = (permission_mode or "none").lower()
         self.permission_allowlist = permission_allowlist or []
+        # 是否向 CLI 注入 AgentChat MCP 工具（让 agent 能直接调用推送）
+        self.mcp_enabled = mcp_enabled
+        self.mcp_config_path = None
 
         self.token = None
         self.user_id = None
@@ -602,9 +635,23 @@ class RemoteBridge:
         if self.push_port:
             env["AGENTCHAT_PUSH_URL"] = f"http://127.0.0.1:{self.push_port}/push"
 
-        logger.info("启动 qwen 子进程: %s", " ".join(self.cli_cmd))
+        # 注入 AgentChat MCP 工具：让 agent 能直接调用 agentchat_send，
+        # 不必借助 shell，也就无需放开 --permission-mode
+        cli_cmd = list(self.cli_cmd)
+        if self.mcp_enabled and self.push_port:
+            self.mcp_config_path = build_mcp_config(self.push_port)
+            if self.mcp_config_path:
+                # -y：自动信任本次注入的 MCP server。
+                # qwen 对新出现的 MCP server 会先置为 pending（需 `qwen mcp approve`），
+                # 未批准时工具不会激活，agent 只能把它当普通程序调用（走 shell、要审批）。
+                # 该配置由桥接器生成且指向本机固定脚本，故直接信任。
+                cli_cmd += ["--mcp-config", self.mcp_config_path, "-y"]
+                logger.info("已注入 MCP 配置: %s（已自动信任）",
+                            self.mcp_config_path)
+
+        logger.info("启动 CLI 子进程: %s", " ".join(cli_cmd))
         self.proc = await asyncio.create_subprocess_exec(
-            *self.cli_cmd,
+            *cli_cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -978,6 +1025,11 @@ def main():
                         "请评估风险后启用")
     p.add_argument("--permission-allowlist", default=None,
                    help="配合 --permission-mode allowlist 的命令白名单，逗号分隔")
+    p.add_argument("--mcp", dest="mcp", action="store_true", default=True,
+                   help="向 CLI 注入 AgentChat MCP 工具（默认开启）："
+                        "agent 可直接调用 agentchat_send 推送消息，无需 shell")
+    p.add_argument("--no-mcp", dest="mcp", action="store_false",
+                   help="不注入 MCP 工具")
     p.add_argument("--check", action="store_true",
                    help="只做环境自检（检查 CLI/依赖/连通性）后退出")
     args = p.parse_args()
@@ -1070,6 +1122,7 @@ def main():
         push_port=push_port,
         permission_mode=perm_mode,
         permission_allowlist=perm_list,
+        mcp_enabled=args.mcp,
     )
 
     async def _run():

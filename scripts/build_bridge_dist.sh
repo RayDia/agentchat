@@ -24,9 +24,10 @@ SRC_RB="$REPO_ROOT/scripts/remote_bridge.py"
 SRC_INST="$REPO_ROOT/scripts/bridge_install.sh"
 SRC_PS1="$REPO_ROOT/scripts/bridge_install.ps1"
 SRC_SEND="$REPO_ROOT/scripts/agentchat_send.sh"
+SRC_MCP="$REPO_ROOT/scripts/agentchat_mcp_server.py"
 SRC_DOC="$REPO_ROOT/docs/REMOTE_AGENT_BRIDGE.md"
 
-for f in "$SRC_RB" "$SRC_INST" "$SRC_PS1" "$SRC_SEND" "$SRC_DOC"; do
+for f in "$SRC_RB" "$SRC_INST" "$SRC_PS1" "$SRC_SEND" "$SRC_MCP" "$SRC_DOC"; do
     [ -f "$f" ] || { echo "缺少源文件: $f" >&2; exit 1; }
 done
 
@@ -35,9 +36,10 @@ BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
 mkdir -p "$OUT" "$BUILD/$NAME"
-cp "$SRC_RB" "$SRC_INST" "$SRC_PS1" "$SRC_SEND" "$SRC_DOC" "$BUILD/$NAME/"
+cp "$SRC_RB" "$SRC_INST" "$SRC_PS1" "$SRC_SEND" "$SRC_MCP" "$SRC_DOC" "$BUILD/$NAME/"
 chmod +x "$BUILD/$NAME/bridge_install.sh" "$BUILD/$NAME/remote_bridge.py" \
-         "$BUILD/$NAME/bridge_install.ps1" "$BUILD/$NAME/agentchat_send.sh"
+         "$BUILD/$NAME/bridge_install.ps1" "$BUILD/$NAME/agentchat_send.sh" \
+         "$BUILD/$NAME/agentchat_mcp_server.py"
 
 # bridge_install.ps1 必须带 UTF-8 BOM，否则 Windows PowerShell 5.1 会把
 # 脚本里的中文按系统 ANSI 编码解析，输出变成乱码

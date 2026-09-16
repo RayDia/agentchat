@@ -70,6 +70,12 @@ if [ -f "$SCRIPT_DIR/agentchat_send.sh" ]; then
     ok "已安装推送工具 agentchat-send"
 fi
 
+# MCP server：让 agent 通过标准 MCP 工具直接推送（无需 shell 权限）
+if [ -f "$SCRIPT_DIR/agentchat_mcp_server.py" ]; then
+    cp "$SCRIPT_DIR/agentchat_mcp_server.py" "$INSTALL_DIR/agentchat_mcp_server.py"
+    ok "已安装 MCP server（agent 可调用 agentchat_send 工具）"
+fi
+
 # ---------- 4. 创建虚拟环境并安装依赖 ----------
 info "创建虚拟环境…"
 if [ ! -d "$INSTALL_DIR/.venv" ]; then
