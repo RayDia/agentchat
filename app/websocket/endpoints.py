@@ -193,8 +193,11 @@ async def forward_mentions_to_agents(channel_id: int, content: str, sender_id: i
         # 检查是否提及了该Agent
         pattern = rf'@{re.escape(session.agent_username)}\b'
         if re.search(pattern, content, re.IGNORECASE):
-            # 提取@提及后的内容
-            match = re.search(rf'@{re.escape(session.agent_username)}\s*(.*)', content, re.IGNORECASE)
+            # 提取@提及后的内容。
+            # 必须加 re.DOTALL：默认 `.` 不匹配换行，否则多行消息（很常见，
+            # 例如消息里带命令、代码、堆栈）只有第一行会被转发给 agent。
+            match = re.search(rf'@{re.escape(session.agent_username)}\s*(.*)',
+                              content, re.IGNORECASE | re.DOTALL)
             task_content = match.group(1) if match else content
             
             input_message = {

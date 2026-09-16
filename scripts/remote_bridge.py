@@ -198,7 +198,8 @@ class RemoteBridge:
     def __init__(self, base_url, channel_id, username, password,
                  cli_cmd=None, api_key=None, model=None,
                  thread_id=None, resume_session_id=None, prompt_timeout=180,
-                 push_port=None):
+                 push_port=None, permission_mode="none",
+                 permission_allowlist=None):
         self.base_url = base_url.rstrip("/")
         self.channel_id = channel_id
         self.username = username
@@ -211,6 +212,9 @@ class RemoteBridge:
         self.prompt_timeout = prompt_timeout
         # 本地推送通道端口：0 或 None 表示禁用
         self.push_port = push_port
+        # 工具审批策略：none(全拒绝) / auto(批准) / allowlist(命令白名单)
+        self.permission_mode = (permission_mode or "none").lower()
+        self.permission_allowlist = permission_allowlist or []
 
         self.token = None
         self.user_id = None
@@ -302,7 +306,7 @@ class RemoteBridge:
 
     async def _handle_qwen_obj(self, obj):
         if "method" in obj and "id" in obj:
-            logger.info("[qwen req] %s", obj.get("method"))
+            await self._on_qwen_request(obj)
             return
         if "method" in obj:
             await self._on_qwen_update(obj.get("params", {}))
@@ -311,6 +315,69 @@ class RemoteBridge:
             fut = self._pending.pop(obj["id"], None)
             if fut and not fut.done():
                 fut.set_result(obj)
+
+    async def _on_qwen_request(self, obj):
+        """响应 qwen 主动发来的请求（带 method+id）。
+
+        此前这里只打日志就 return，导致 qwen 的 session/request_permission
+        永远等不到回复 —— 它要执行工具前必须先获得 client 批准，收不到响应
+        就只能卡住或放弃，表现为「LLM 明明有工具却不会用」。
+        """
+        method = obj.get("method")
+        rid = obj.get("id")
+        params = obj.get("params") or {}
+
+        if method == "session/request_permission":
+            result = self._decide_permission(params)
+            logger.info("[qwen req] request_permission -> %s（mode=%s）",
+                        json.dumps(result, ensure_ascii=False)[:120],
+                        self.permission_mode)
+            await self._qwen_write({"jsonrpc": "2.0", "id": rid, "result": result})
+            return
+
+        # 其余请求（fs/terminal 等）当前未实现：明确回错，避免 qwen 一直等待
+        logger.info("[qwen req] %s（未实现，已回 method not found）", method)
+        await self._qwen_write({
+            "jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        })
+
+    def _decide_permission(self, params):
+        """按 --permission-mode 决定批准还是拒绝。"""
+        if self.permission_mode == "none":
+            return {"outcome": {"outcome": "cancelled"}}
+
+        tool = params.get("toolCall") or {}
+        raw = tool.get("rawInput") or {}
+        command = str(raw.get("command") or raw.get("cmd") or "")
+        title = tool.get("title") or ""
+
+        if self.permission_mode == "allowlist":
+            allowed = [p for p in self.permission_allowlist if p]
+            if not allowed:
+                logger.warning("permission-mode=allowlist 但未配置白名单，拒绝执行")
+                return {"outcome": {"outcome": "cancelled"}}
+            if not any(p in command for p in allowed):
+                logger.warning("命令不在白名单，拒绝: %s", command[:120])
+                return {"outcome": {"outcome": "cancelled"}}
+
+        # 在给定选项里挑一个「允许」类选项
+        options = params.get("options") or []
+        allow = None
+        for opt in options:
+            kind = str(opt.get("kind") or "").lower()
+            name = str(opt.get("name") or "").lower()
+            if kind.startswith("allow") or "allow" in name:
+                allow = opt
+                break
+        if allow is None:
+            logger.warning("无可用允许选项（title=%s command=%s）",
+                           title, command[:80])
+            return {"outcome": {"outcome": "cancelled"}}
+
+        logger.info("批准工具执行: %s | %s", title, command[:150])
+        return {"outcome": {"outcome": "selected",
+                            "optionId": allow.get("optionId")}}
 
     async def _on_qwen_update(self, params):
         """累积助手正式回复文本（兼容 dict / list / str 三种 content 形态）。"""
@@ -903,6 +970,14 @@ def main():
     p.add_argument("--push-port", type=int, default=None,
                    help="本地推送服务端口；agent session 内可 POST 到此端口向频道"
                         "发送消息。0 表示禁用（默认 8765）")
+    p.add_argument("--permission-mode", default=None,
+                   choices=["none", "auto", "allowlist"],
+                   help="工具执行审批策略：none=一律拒绝（默认，agent 不会执行"
+                        "命令）；auto=批准；allowlist=仅批准命中 --permission-"
+                        "allowlist 的命令。开启即允许 agent 在本机执行命令，"
+                        "请评估风险后启用")
+    p.add_argument("--permission-allowlist", default=None,
+                   help="配合 --permission-mode allowlist 的命令白名单，逗号分隔")
     p.add_argument("--check", action="store_true",
                    help="只做环境自检（检查 CLI/依赖/连通性）后退出")
     args = p.parse_args()
@@ -935,6 +1010,11 @@ def main():
     cli_cmd_raw = pick("cli_cmd")
     resume = pick("resume_session")
     push_port_raw = pick("push_port", "AGENTCHAT_PUSH_PORT")
+    perm_mode = (pick("permission_mode", "AGENTCHAT_PERMISSION_MODE") or "none").lower()
+    if perm_mode not in ("none", "auto", "allowlist"):
+        p.error(f"--permission-mode 只能是 none/auto/allowlist，当前为 {perm_mode!r}")
+    perm_raw = pick("permission_allowlist", "AGENTCHAT_PERMISSION_ALLOWLIST")
+    perm_list = [x.strip() for x in str(perm_raw).split(",") if x.strip()] if perm_raw else []
 
     # 本地推送通道：默认开启 8765；显式设 0 表示禁用
     try:
@@ -988,6 +1068,8 @@ def main():
         thread_id=thread_id,
         resume_session_id=resume,
         push_port=push_port,
+        permission_mode=perm_mode,
+        permission_allowlist=perm_list,
     )
 
     async def _run():

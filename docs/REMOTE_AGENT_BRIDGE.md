@@ -486,28 +486,39 @@ curl -X POST http://127.0.0.1:8765/push -d '构建完成，共修改 3 个文件
 - `output` 必须由**建立了该 session 的那条 WS 连接**发出，换连接会被拒
 - 服务端每 30 秒发一次 `ping`，未回应会被视为掉线
 
-### 5.2 ⚠️ LLM 能否自己发起推送？（重要限制）
+### 5.2 让 LLM 自己发起推送（工具审批）
 
-**不能。** 这是 ACP 的架构决定，不是本项目的缺陷。
+qwen 在 ACP 会话里**自带** `run_shell_command` 工具（让它列工具时会列出），
+所以它可以自己执行 `curl` 完成推送。但要真正执行，需要 client（桥接器）
+批准——qwen 会先发 `session/request_permission`，收不到回复就只能卡住或放弃。
 
-ACP 遵从 Zed 的设计：**文件系统与终端由 client（也就是桥接器）托管**。
-qwen 侧的代码是 `setupFileSystem(){ if (!this.clientCapabilities?.fs) return; }`——
-client 不声明 `clientCapabilities`（`fs` / `terminal`），它就认为没有这些工具。
-本桥接器目前没有实现这些 client 能力，因此在 ACP 会话里的 qwen
-**不会执行任何 shell 命令**（实测：让它执行 `curl` 推送时，它直接以文本回复
-"您没有提供要推送的文字内容"，全程未向 client 发起任何方法请求）。
+桥接器原先对这类请求**只打日志不回应**，表现为「LLM 明明有工具却不用」。
+现已补上审批逻辑，用 `--permission-mode` 控制：
 
-因此正确用法是**由外层编排，而不是让 LLM 自己调**：
+| 模式 | 行为 | 适用场景 |
+|---|---|---|
+| `none`（**默认**） | 一律拒绝，agent 不会执行任何命令 | 只做问答、不希望 agent 动机器 |
+| `auto` | 批准其请求（选 `proceed_once`） | 可信环境，希望 agent 自主推送/执行 |
+| `allowlist` | 仅批准命中白名单的命令 | 想放开但限制范围 |
 
-| 场景 | 做法 |
-|---|---|
-| 定时巡检 / CI / 构建通知 | 脚本直接 POST 到本地推送端口 |
-| 长时间任务的进度汇报 | 编排 qwen 的外层脚本按其输出/状态回调推送 |
-| 想让 LLM 自主推送 | 需桥接器实现 ACP client 能力（`fs/*`、`terminal/*`、<br>`session/request_permission`），见下 |
+```bash
+# 允许 agent 自主执行（进而可自行 curl 推送）
+./start.sh --permission-mode auto
 
-> 若确实要让 LLM 自主执行，需要桥接器声明 `clientCapabilities` 并实现上述 RPC。
-> 请注意这等同于**授予 LLM 在用户机器上执行任意命令的权限**，涉及明显的安全
-> 权衡（建议至少做命令白名单与审批），属于独立的工作量。
+# 只允许调用本地推送端口
+./start.sh --permission-mode allowlist \
+           --permission-allowlist "127.0.0.1:8765,localhost:8765"
+```
+
+配置文件 / 环境变量同样支持：`permission-mode`、`permission-allowlist` /
+`AGENTCHAT_PERMISSION_MODE`、`AGENTCHAT_PERMISSION_ALLOWLIST`。
+
+> **安全提示**：`auto` 等于允许 agent 在本机执行任意命令（它会自己决定执行什么）。
+> 生产环境建议用 `allowlist` 收紧范围，避免不可逆操作。
+
+实测（`--permission-mode auto`）：人类 @提及「请执行 `curl -X POST
+http://127.0.0.1:8765/push -d '...'`」→ qwen 申请权限 → 桥接器批准 →
+命令执行 → 消息以该 agent 身份落库（`sender_id` 为该 agent）。
 
 ### 5.3 限制
 
