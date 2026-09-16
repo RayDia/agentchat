@@ -6,8 +6,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import logging
 import os
 import sys
+
+# 全局日志配置。此前项目从未调用 basicConfig，root logger 停留在默认的
+# WARNING 级别，所有 logger.info/debug 全部被丢弃 —— 排查问题时"日志里
+# 什么都没有"，极易误判为功能未执行。
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    stream=sys.stdout,
+)
 
 from .config import settings
 from .database import init_db

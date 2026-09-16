@@ -287,6 +287,9 @@ class RemoteBridge:
         self._ack_waiter = None
         self._push_server = None
         self._stopping = False
+        # 输入队列：LLM 推理是慢操作，必须与接收循环解耦，否则消息被丢
+        self._input_queue = asyncio.Queue()
+        self.max_input_queue = 100
 
     # ---------------- 认证 ----------------
     @property
@@ -572,18 +575,54 @@ class RemoteBridge:
                 self._ack_waiter = None
 
     async def _on_input(self, data):
+        """把 input 放入队列，由 _input_worker 串行处理。
+
+        不能在接收循环里直接 await prompt_qwen：LLM 推理耗时数秒到数十秒，
+        期间协程不返回，接收循环无法读取 WS 帧 —— 后到的输入会被静默丢弃。
+        补发离线消息时多条几乎同时到达，必然踩中该问题。
+        """
         inp = data.get("message", {})
         content = inp.get("content", "")
         sender = inp.get("sender_username") or inp.get("sender_id")
-        logger.info("[agentchat input] from=%s: %s", sender, content[:80])
-        try:
-            reply = await self.prompt_qwen(content)
-        except Exception as e:
-            reply = f"[bridge 异常] {e}"
-        try:
-            await self.push(reply)
-        except RuntimeError as e:
-            logger.error("回复发送失败: %s", e)
+        size = self._input_queue.qsize()
+        if size >= self.max_input_queue:
+            logger.warning("[input] 队列已满(%d)，丢弃来自 %s 的消息: %s",
+                           size, sender, content[:60])
+            return
+        await self._input_queue.put((sender, content))
+        logger.info("[input] 入队 from=%s（队列 %d）: %s",
+                    sender, self._input_queue.qsize(), content[:80])
+
+    async def _input_worker(self):
+        """单协程串行消费输入队列：保证同一会话的 LLM 上下文顺序正确。"""
+        while not self._stopping:
+            try:
+                sender, content = await self._input_queue.get()
+            except asyncio.CancelledError:
+                raise
+
+            # 等 acp_session_id 就绪。服务端在 handle_connect 里同步补发离线
+            # 消息，而该字段要等 _loop 读到 connect 回执才有；不等待就会用
+            # None 去 push，导致首条消息回复失败。
+            for _ in range(300):      # 最多等 30 秒
+                if self.acp_session_id or self._stopping:
+                    break
+                await asyncio.sleep(0.1)
+            if not self.acp_session_id:
+                logger.error("[input] 会话未就绪，放弃处理: %s", content[:60])
+                self._input_queue.task_done()
+                continue
+
+            try:
+                reply = await self.prompt_qwen(content)
+            except Exception as e:
+                reply = f"[bridge 异常] {e}"
+            try:
+                await self.push(reply)
+            except RuntimeError as e:
+                logger.error("回复发送失败: %s", e)
+            finally:
+                self._input_queue.task_done()
 
     async def _loop(self):
         while not self._stopping:
@@ -733,9 +772,33 @@ class RemoteBridge:
         logger.info("已连接 AgentChat(%s, channel=%s) 与 qwen(session=%s)",
                     self.base_url, self.channel_id, self.qwen_session_id)
 
-        await self._loop()
+        # 注意启动顺序：必须先让 _loop 读到 connect 回执（拿到 acp_session_id），
+        # 才能开始消费输入队列。服务端的补发是在 handle_connect 里**同步**完成的
+        # —— 若先启动 worker，第一条 input 可能在 acp_session_id 就绪前被处理，
+        # 回复时会抛"尚未拿到 ACP session_id"，表现为第一条消息无回复。
+        loop_task = asyncio.create_task(self._loop())
+        await asyncio.sleep(0)
+        worker = asyncio.create_task(self._input_worker())
+        try:
+            await loop_task
+        finally:
+            worker.cancel()
+            try:
+                await worker
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def stop(self):
+        # 先给队列里已收到的输入一点处理时间，避免退出时把用户的提问丢掉
+        pending = self._input_queue.qsize()
+        if pending:
+            logger.info("退出前等待 %d 条待处理输入完成…", pending)
+            try:
+                await asyncio.wait_for(self._input_queue.join(), timeout=60)
+            except Exception:
+                logger.warning("仍有 %d 条输入未处理完，已放弃等待",
+                               self._input_queue.qsize())
+
         self._stopping = True
         if self._push_server:
             try:

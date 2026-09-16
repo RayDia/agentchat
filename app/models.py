@@ -1,7 +1,8 @@
 """
 Database Models for Agent Collaboration Platform
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Enum
+from sqlalchemy import (Column, Integer, String, Text, DateTime, ForeignKey,
+                        Boolean, Enum, UniqueConstraint, Index)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -238,3 +239,46 @@ class ActivityLog(Base):
     
     # Relationships
     user = relationship("User")
+
+
+class PendingMentionStatus(str, enum.Enum):
+    """待投递消息的状态"""
+    PENDING = "PENDING"       # 等待 agent 上线
+    DELIVERED = "DELIVERED"   # 已投递
+    FAILED = "FAILED"         # 重试超限
+    EXPIRED = "EXPIRED"       # 超过保留时长或积压超限被丢弃
+
+
+class PendingMention(Base):
+    """
+    待投递的 @提及 消息队列。
+
+    agent 离线时被 @ 的消息此前会被静默丢弃（forward_mentions 只遍历内存中
+    的活跃会话）。本表把「投递意图」持久化：消息本身仍在 messages 表，
+    这里只记录「哪个 agent 还没收到哪条消息」，agent 上线后按序补发。
+    """
+    __tablename__ = "pending_mentions"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=False)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    agent_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # 冗余正文：补发时无需回查 messages，也避免原消息被编辑后语义漂移
+    content = Column(Text, nullable=False)
+    status = Column(Enum(PendingMentionStatus),
+                    default=PendingMentionStatus.PENDING, nullable=False)
+    attempts = Column(Integer, default=0)
+    delivered_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # 幂等：同一条消息对同一个 agent 只应入队一次
+    __table_args__ = (
+        UniqueConstraint("message_id", "agent_id",
+                         name="uq_pending_mention_msg_agent"),
+        Index("ix_pending_agent_status", "agent_id", "status", "created_at"),
+    )
+
+    message = relationship("Message")
+    agent = relationship("User", foreign_keys=[agent_id])
+    sender = relationship("User", foreign_keys=[sender_id])

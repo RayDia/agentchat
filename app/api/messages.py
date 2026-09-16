@@ -132,11 +132,21 @@ async def send_message(
     db.commit()
     db.refresh(new_message)
     
-    # 处理@提及通知
+    # 处理@提及通知（站内通知，面向人类用户）
     from ..services.notification import NotificationService
     notification_service = NotificationService(db)
     await notification_service.process_mentions(new_message, message.channel_id)
-    
+
+    # 投递@提及给 agent：在线实时推送、离线入队。
+    # 此前这条路径完全不转发，而前端在 WS 发送失败时会 fallback 到这里
+    # （ChatArea.jsx），导致消息"发出去了但 agent 永远收不到"。
+    from ..services.mention_service import dispatch_mentions
+    try:
+        await dispatch_mentions(db, new_message, current_user)
+    except Exception as e:
+        # 投递失败不影响消息本身（已落库）
+        print(f"[HTTP] @提及投递异常: {e}")
+
     return MessageResponse.model_validate(new_message)
 
 

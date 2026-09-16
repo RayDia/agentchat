@@ -9,6 +9,7 @@ from ..database import SessionLocal
 from ..models import User, Message, Channel, ChannelMember
 from .manager import manager
 from ..acp import session_manager
+from ..services.mention_service import dispatch_mentions
 import json
 from datetime import datetime, timezone
 import re
@@ -171,54 +172,58 @@ async def handle_chat_message(user: User, message: dict):
         
         await manager.send_to_channel(channel_id, broadcast_message)  # 包含发送者
         print(f"[WS] 消息广播完成")
-        
-        # 转发@提及给Agent
-        await forward_mentions_to_agents(channel_id, content, user.id, user.username, user.display_name or user.username)
-    
+
+        # 转发@提及给Agent：在线实时推送，离线入队待 agent 上线补发
+        try:
+            stats = await dispatch_mentions(db, new_message, user)
+            if stats["queued"]:
+                # 告知发送者消息已排队，避免"发完没人理"的无反馈体验
+                await manager.send_to_user(user.id, {
+                    "type": "mention_queued",
+                    "data": {
+                        "message_id": new_message.id,
+                        "channel_id": channel_id,
+                        "agent_ids": stats["queued"],
+                        "reason": "agent_offline",
+                    },
+                })
+        except Exception as e:
+            # 投递失败不应影响消息本身（已落库并广播）
+            print(f"[WS] @提及投递异常: {e}")
+
     finally:
         db.close()
 
 
 
 async def forward_mentions_to_agents(channel_id: int, content: str, sender_id: int, sender_username: str, sender_display_name: str):
-    """将@提及消息转发给频道的Agent会话"""
-    from ..acp import session_manager
-    
-    sessions = session_manager.get_sessions_by_channel(channel_id)
-    
-    for session in sessions:
-        if not session.is_alive or not session.websocket:
-            continue
-        
-        # 检查是否提及了该Agent
-        pattern = rf'@{re.escape(session.agent_username)}\b'
-        if re.search(pattern, content, re.IGNORECASE):
-            # 提取@提及后的内容。
-            # 必须加 re.DOTALL：默认 `.` 不匹配换行，否则多行消息（很常见，
-            # 例如消息里带命令、代码、堆栈）只有第一行会被转发给 agent。
-            match = re.search(rf'@{re.escape(session.agent_username)}\s*(.*)',
-                              content, re.IGNORECASE | re.DOTALL)
-            task_content = match.group(1) if match else content
-            
-            input_message = {
-                "type": "input",
-                "data": {
-                    "session_id": session.session_id,
-                    "message": {
-                        "content": task_content,
-                        "sender_id": sender_id,
-                        "sender_username": sender_username,
-                        "sender_display_name": sender_display_name,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                }
-            }
-            
-            try:
-                await session.websocket.send_json(input_message)
-            except Exception as e:
-                print(f"[ACP] 转发@提及给Agent失败: {e}")
-                session.is_alive = False
+    """兼容旧调用点的薄封装。
+
+    实际投递逻辑已收敛到 app/services/mention_service.dispatch_mentions，
+    以便 WS 与 HTTP 两条路径行为一致（此前 HTTP 路径完全不转发 @提及，
+    是消息丢失的第二条路径）。新代码请直接调用 dispatch_mentions。
+    """
+    from ..database import SessionLocal
+    from ..models import Message, User
+    from ..services.mention_service import dispatch_mentions
+
+    db = SessionLocal()
+    try:
+        # 找到该频道最近一条由 sender 发出、内容匹配的消息作为投递载体
+        msg = (
+            db.query(Message)
+            .filter(Message.channel_id == channel_id,
+                    Message.sender_id == sender_id,
+                    Message.content == content)
+            .order_by(Message.id.desc())
+            .first()
+        )
+        sender = db.query(User).filter(User.id == sender_id).first()
+        if msg is None or sender is None:
+            return
+        await dispatch_mentions(db, msg, sender)
+    finally:
+        db.close()
 
 
 async def handle_typing_indicator(user: User, message: dict):

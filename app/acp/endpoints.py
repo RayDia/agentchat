@@ -15,6 +15,9 @@ from ..models import User, Message, Channel, ChannelMember
 from ..auth import get_current_user
 from ..config import settings
 from ..websocket.manager import manager as connection_manager
+import logging
+
+logger = logging.getLogger("AgentChat.ACP")
 from .protocol import (
     ACPProtocol,
     SessionManager,
@@ -225,6 +228,34 @@ async def handle_connect(user: User, message: dict, websocket: WebSocket):
     
     # 广播Agent上线
     await broadcast_session_status(channel_id, "agent_connected", agent_session.to_dict())
+
+    # 补发离线期间被 @ 的消息。
+    # 此前 agent 离线时这些消息会被静默丢弃；现在它们躺在 pending_mentions
+    # 表里，agent 一上线就按序补投（逐条发送，避免 LLM 上下文错乱）。
+    try:
+        from ..services.mention_service import flush_pending_for_session, pending_count
+        db2 = SessionLocal()
+        try:
+            waiting = pending_count(db2, user.id)
+        finally:
+            db2.close()
+
+        if waiting:
+            logger.info("[mention] agent %s 上线，待补发 %d 条", user.id, waiting)
+            stats = await flush_pending_for_session(agent_session)
+            logger.info("[mention] 补发完成: %s", stats)
+            # 把补发情况回执给 agent，便于其日志/自检
+            try:
+                await websocket.send_json({
+                    "type": "pending_flushed",
+                    "data": {"pending_before": waiting, **stats},
+                })
+            except Exception:
+                pass
+    except Exception as e:
+        # 补发失败不应影响连接建立
+        logger.warning("[mention] 补发待投递消息异常: %s", e)
+
     return agent_session
 
 
